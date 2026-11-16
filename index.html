@@ -1130,7 +1130,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     cons: store.get('cons', {}), causa: store.get('causa', {}), resp: store.get('resp', {}), supMap: store.get('supMap', {}), logos: store.get('logos', {}),
     apEd: {}, ws: null, mes: null, ano: null, dia: null, emp: 'Todas', tab: 'carregar', gran: 'semana',
     eq: { vis: 'hier', per: 'semana' }, pa: { per: 'semana' }, rel: { per: 'semana' }, closed: {},
-    f: { q: '', status: '', fiscal: '', emp: '' }, busy: '', seq: 0,
+    f: { q: '', status: '', fiscal: '', emp: '', di: '' }, busy: '', seq: 0,
   };
   const TABS = [['carregar', 'Carregar', '⇪'], ['resumo', 'Resumo', '◔'], ['atividades', 'Atividades', '☰'], ['equipes', 'Equipes', '⚑'], ['pareto', 'Pareto', '▥'], ['relatorio', 'Relatório', '⎙'], ['fontes', 'Fontes', 'ⓘ']];
 
@@ -1260,6 +1260,36 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     return { tot, por, view: (emp) => (emp && emp !== 'Todas' && por[emp] ? por[emp] : tot) };
   }
   const rowsFor = (wsList) => wsList.flatMap((ws) => W(ws).rows);
+  /* visão por dia: cada atividade vira uma linha do dia (previsto/realizado só daquele dia) */
+  function dayRows(d, ws, keepOthers) {
+    ws = ws || E.weekStart(d); if (!weeks.includes(ws)) return [];
+    const i = E.weekDays(ws).indexOf(d); if (i < 0) return []; const ap = apEff(); const out = [];
+    for (const r of W(ws).rows) {
+      if (!r.considerar) continue;
+      const pv = r.P[i] > 0 ? r.P[i] : 0; const rv = r.R[i] > 0 ? r.R[i] : 0;
+      const lim = ap[r.empresa]; const apur = !!lim && d <= lim;
+      if (pv > 0) {
+        const base = Object.assign({}, r, { dia: d, pTot: pv, pAp: apur ? pv : 0, rAp: apur ? rv : 0 });
+        if (apur) { const concl = rv >= pv - 1e-6, parcial = !concl && rv > 1e-6; return_push(out, Object.assign(base, { programada: true, ader: Math.min(1, rv / pv), concl, parcial, naoExec: !concl && !parcial, antecipada: false, status: concl ? 'Concluída' : parcial ? 'Parcial' : 'Não executada' })); }
+        else return_push(out, Object.assign(base, { programada: false, ader: null, concl: false, parcial: false, naoExec: false, status: 'A apurar' }));
+      } else if (rv > 0 && keepOthers) return_push(out, Object.assign({}, r, { dia: d, programada: false, pTot: 0, pAp: 0, rAp: rv, ader: null, concl: false, parcial: false, naoExec: false, antecipada: true, status: 'Antecipada' }));
+    }
+    return out;
+  }
+  const return_push = (arr, x) => { arr.push(x); };
+  const rowsInfo = (x) => (Array.isArray(x) ? rowsFor(x) : x && x.tipo === 'dia' ? dayRows(x.dia, x.weeks[0]) : rowsFor(x.weeks));
+  function aggRows(rows) {
+    const por = {}; empresas.forEach((e) => { por[e] = blank(); });
+    for (const r of rows) {
+      const t = por[r.empresa]; if (!t) continue;
+      if (r.programada) { t.n++; t.sa += r.ader || 0; if (r.concl) t.c++; else if (r.parcial) t.p++; else t.x++; if (r.antecipada) t.ant++; }
+      else if (r.status === 'A apurar') t.apur++;
+    }
+    const tot = blank(); Object.values(por).forEach((t) => { for (const k of Object.keys(tot)) tot[k] += t[k]; });
+    empresas.forEach((e) => fin(por[e])); fin(tot);
+    return { tot, por, view: (emp) => (emp && emp !== 'Todas' && por[emp] ? por[emp] : tot) };
+  }
+  const aggInfo = (info) => (info.tipo === 'dia' ? aggRows(rowsInfo(info)) : agg(info.weeks));
 
   /* períodos */
   const wk = (ws) => `S${E.weekNumber(ws)}`;
@@ -1269,13 +1299,15 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
   const fdia = (iso) => `${E.DIAS[(new Date(iso + 'T00:00:00Z').getUTCDay() + 6) % 7]} ${E.fmtBR(iso)}`;
   function perInfo(per, refs) {
-    refs = refs || { semana: S.ws, mes: S.mes, ano: S.ano };
+    refs = refs || { semana: S.ws, mes: S.mes, ano: S.ano, dia: S.dia };
+    if (per === 'dia') { const d = refs.dia || S.dia; const ws = E.weekStart(d); return { tipo: 'dia', dia: d, weeks: [ws], label: fdia(d), curto: E.fmtBR(d).slice(0, 5), titulo: 'Dia ' + fdia(d) }; }
     if (per === 'semana') return { tipo: per, weeks: [refs.semana], label: wLabel(refs.semana), curto: wk(refs.semana), titulo: 'Semana ' + wLabel(refs.semana) };
     if (per === 'mes') return { tipo: per, weeks: weeks.filter((w) => w.slice(0, 7) === refs.mes), label: cap(mLabel(refs.mes)), curto: MES3[+refs.mes.slice(5, 7) - 1] + '/' + refs.mes.slice(2, 4), titulo: 'Mês de ' + mLabel(refs.mes) };
     if (per === 'ano') return { tipo: per, weeks: weeks.filter((w) => w.slice(0, 4) === refs.ano), label: refs.ano, curto: refs.ano, titulo: 'Ano ' + refs.ano };
     return { tipo: 'tudo', weeks: weeks.slice(), label: 'Acumulado', curto: 'Acum.', titulo: 'Acumulado do projeto' };
   }
   const prevInfo = (per) => {
+    if (per === 'dia') { for (let k = 1; k <= 14; k++) { const d = E.addDays(S.dia, -k); if (weeks.includes(E.weekStart(d)) && dayRows(d).some((r) => r.programada)) return perInfo('dia', { dia: d }); } return null; }
     if (per === 'semana') { const i = weeks.indexOf(S.ws); return i > 0 ? perInfo('semana', { semana: weeks[i - 1] }) : null; }
     if (per === 'mes') { const i = months.indexOf(S.mes); return i > 0 ? perInfo('mes', { mes: months[i - 1] }) : null; }
     if (per === 'ano') { const i = years.indexOf(S.ano); return i > 0 ? perInfo('ano', { ano: years[i - 1] }) : null; }
@@ -1294,10 +1326,10 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   const justOf = (r) => S.just[r.ws + '|' + r.key] || (r.a.meta && r.a.meta[r.ws] && r.a.meta[r.ws].obs) || r.motivo || r.a.obs || '';
   function attData(wl, emp) {
     const ord = (r) => (r.parcial ? 1 : 0);
-    const rows = rowsFor(wl).filter((r) => r.programada && !r.concl && (!emp || emp === 'Todas' || r.empresa === emp));
+    const rows = rowsInfo(wl).filter((r) => r.programada && !r.concl && (!emp || emp === 'Todas' || r.empresa === emp));
     return empresas.map((e) => {
       const rr = rows.filter((r) => r.empresa === e).sort((p, q) => ord(p) - ord(q) || p.ader - q.ader || q.pAp - p.pAp);
-      const prog = rowsFor(wl).filter((r) => r.programada && r.empresa === e);
+      const prog = rowsInfo(wl).filter((r) => r.programada && r.empresa === e);
       return { e, rows: rr, nx: rr.filter((r) => !r.parcial).length, np: rr.filter((r) => r.parcial).length, n: prog.length, c: prog.filter((r) => r.concl).length };
     }).filter((z) => emp === 'Todas' || !emp || z.e === emp);
   }
@@ -1314,7 +1346,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
   /* ---------- helpers de UI ---------- */
   const sem = (v) => (v == null ? 'na' : v >= S.meta ? 'ok' : v >= S.meta - 0.1 ? 'warn' : 'bad');
-  const chipFor = (st) => ({ 'Concluída': 'ok', Parcial: 'warn', 'Não executada': 'bad', 'A apurar': 'info', 'Fora do PPC': 'mute' }[st] || 'mute');
+  const chipFor = (st) => ({ Antecipada: 'info', 'Concluída': 'ok', Parcial: 'warn', 'Não executada': 'bad', 'A apurar': 'info', 'Fora do PPC': 'mute' }[st] || 'mute');
   const chip = (st) => `<span class="chip chip-${chipFor(st)}">${esc(st)}</span>`;
   function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => { t.hidden = true; }, 3200); }
   const deltaTxt = (cur, prev, ref) => {
@@ -1458,6 +1490,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   const empPills = () => `<div class="pills">${['Todas'].concat(empresas).map((e) => `<button class="pill ${S.emp === e ? 'on' : ''}" data-emp="${esc(e)}">${e === 'Todas' ? '' : logo(e, 16)}${esc(e)}</button>`).join('')}</div>`;
   const seg = (items, cur, attr) => `<div class="seg" role="group">${items.map(([k, l]) => `<button class="${cur === k ? 'on' : ''}" ${attr}="${k}">${l}</button>`).join('')}</div>`;
   function periodSelect(per) {
+    if (per === 'dia') { const ser = seriesFor('dia'); return weekCtl() + `<div class="pills days">${ser.map((p) => `<button class="pill ${p.d === S.dia ? 'on' : ''}" data-dia="${p.d}"><i class="dt dt-${sem(p.st.tot.ppc)}"></i>${esc(p.label)} <small>${esc(p.sub)}</small></button>`).join('')}</div>`; }
     if (per === 'semana') return weekCtl();
     if (per === 'mes') return `<select id="msel" aria-label="Mês">${months.slice().reverse().map((m) => `<option value="${m}" ${m === S.mes ? 'selected' : ''}>${cap(mLabel(m))}</option>`).join('')}</select>`;
     if (per === 'ano') return `<select id="asel" aria-label="Ano">${years.slice().reverse().map((a) => `<option ${a === S.ano ? 'selected' : ''}>${a}</option>`).join('')}</select>`;
@@ -1611,7 +1644,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
   /* ---------- Atividades ---------- */
   function actRows() {
-    let rows = rowsOf(S.ws); const f = S.f; const q = E.norm(f.q);
+    const f = S.f; const q = E.norm(f.q); const di = f.di === '' || f.di == null ? -1 : +f.di;
+    let rows = di >= 0 ? dayRows(E.weekDays(S.ws)[di], S.ws, true) : rowsOf(S.ws);
     if (f.emp) rows = rows.filter((r) => r.empresa === f.emp);
     if (f.fiscal) rows = rows.filter((r) => (r.a.fiscal || '—') === f.fiscal);
     if (f.status) rows = rows.filter((r) => r.status === f.status);
@@ -1621,9 +1655,9 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   function tabAtividades() {
     if (!S.ws) return emptyState();
     const all = rowsOf(S.ws); const fiscais = [...new Set(all.map((r) => r.a.fiscal || '—'))].sort();
-    const sts = ['Concluída', 'Parcial', 'Não executada', 'A apurar', 'Fora do PPC']; const f = S.f; const rows = actRows();
+    const sts = ['Concluída', 'Parcial', 'Não executada', 'A apurar', 'Antecipada', 'Fora do PPC']; const f = S.f; const rows = actRows();
     const o = (arr, v, al) => `<option value="">${al}</option>` + arr.map((x) => `<option ${x === v ? 'selected' : ''}>${esc(x)}</option>`).join('');
-    const bar1 = `<div class="filters"><input id="q" type="search" placeholder="Buscar atividade, local, responsável…" value="${esc(f.q)}" aria-label="Buscar"><select data-f="emp" aria-label="Empresa">${o(empresas, f.emp, 'Todas as empresas')}</select><select data-f="fiscal" aria-label="Fiscal">${o(fiscais, f.fiscal, 'Todos os fiscais')}</select><select data-f="status" aria-label="Status">${o(sts, f.status, 'Todos os status')}</select></div>`;
+    const bar1 = `<div class="filters"><input id="q" type="search" placeholder="Buscar atividade, local, responsável…" value="${esc(f.q)}" aria-label="Buscar"><select data-f="emp" aria-label="Empresa">${o(empresas, f.emp, 'Todas as empresas')}</select><select data-f="fiscal" aria-label="Fiscal">${o(fiscais, f.fiscal, 'Todos os fiscais')}</select><select data-f="status" aria-label="Status">${o(sts, f.status, 'Todos os status')}</select><select data-f="di" aria-label="Dia" class="f-dia"><option value="">Semana toda</option>${E.weekDays(S.ws).map((d, i) => `<option value="${i}" ${String(f.di) === String(i) ? 'selected' : ''}>${esc(fdia(d))}</option>`).join('')}</select><button class="btn ghost sm-b" data-fclear="1">Limpar filtros</button><button class="btn ghost sm-b" data-fcsv="1">Baixar CSV</button></div>`;
     const copt = (v) => `<option value="">—</option>` + causasList().map((c) => `<option ${c === v ? 'selected' : ''}>${esc(c)}</option>`).join('');
     const ropt = (v) => `<option value="">—</option>` + respsList().map((c) => `<option ${c === v ? 'selected' : ''}>${esc(c)}</option>`).join('');
     const body = rows.map((r) => {
@@ -1635,7 +1669,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
         <td class="c"><label class="tgl" title="Considerar no PPC"><input type="checkbox" data-cons="${esc(r.key)}" ${r.considerar ? 'checked' : ''}><span></span></label></td>
         <td>${nao ? `<select class="cs" data-causa="${esc(r.key)}" aria-label="Causa">${copt(causaOf(r))}</select>` : ''}</td><td>${nao ? `<select class="cs" data-resp="${esc(r.key)}" aria-label="Responsabilidade">${ropt(respOf(r))}</select>` : ''}</td></tr>`;
     }).join('');
-    return `${pageHead('Atividades', 'Programado × realizado de cada atividade. Ajuste o que conta no PPC e registre causa e responsabilidade.', weekCtl())}${bar1}<p class="muted sm">${rows.length} atividade(s) em ${wLabel(S.ws)}. Prev. ap. e Real. = valores apurados até a data de apuração.</p>
+    return `${pageHead('Atividades', 'Programado × realizado de cada atividade. Ajuste o que conta no PPC e registre causa e responsabilidade.', weekCtl())}${bar1}<p class="muted sm">${rows.length} atividade(s) em ${f.di !== '' && f.di != null ? esc(fdia(E.weekDays(S.ws)[+f.di])) + ' (' + wk(S.ws) + ')' : wLabel(S.ws)}. ${f.di !== '' && f.di != null ? 'Prev. ap. e Real. = valores do dia.' : 'Prev. ap. e Real. = valores apurados até a data de apuração.'}</p>
       <div class="tw tall"><table class="acts"><thead><tr><th>Empresa</th><th>ID</th><th>Atividade</th><th>Fiscal</th><th>Encarregado</th><th>Liderança</th><th>Un.</th><th class="r">Prev. sem.</th><th class="r">Prev. ap.</th><th class="r">Real.</th><th>Aderência</th><th>Status</th><th class="c">PPC</th><th>Causa</th><th>Responsab.</th></tr></thead><tbody>${body || '<tr><td colspan="15" class="muted">Nenhuma atividade com esses filtros.</td></tr>'}</tbody></table></div>`;
   }
 
@@ -1669,7 +1703,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   }
   function tabEquipes() {
     if (!S.ws) return emptyState();
-    const info = perInfo(S.eq.per); const rows = rowsFor(info.weeks).filter((r) => r.programada && (S.emp === 'Todas' || r.empresa === S.emp));
+    const info = perInfo(S.eq.per); const rows = rowsInfo(info).filter((r) => r.programada && (S.emp === 'Todas' || r.empresa === S.emp));
     const vis = S.eq.vis; let body = '';
     const rank = (list) => rankChart(list.slice().sort((a, b) => a.ppc - b.ppc || b.n - a.n).slice(0, 14));
     const hier = tree(rows);
@@ -1686,14 +1720,14 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     const byEmp = empresas.filter((e) => S.emp === 'Todas' || S.emp === e).map((e) => { const rr = rows.filter((r) => r.empresa === e); const n = rr.length, c = rr.filter((r) => r.concl).length; return { e, n, c, ppc: n ? c / n : null }; });
     const kp = byEmp.map((z) => `<div class="kpi">${logo(z.e, 18)}<b class="t-${sem(z.ppc)}">${pct(z.ppc)}</b><small>${z.c} de ${z.n} · ${esc(z.e)}</small></div>`).join('');
     return `${pageHead('Equipes', `Quem entrega: PPC por empresa, fiscal, encarregado e liderança · ${esc(info.label)}`, '')}
-      <div class="ctl"><div class="ctl-l">${seg([['hier', 'Hierarquia'], ['fiscal', 'Fiscal'], ['enc', 'Encarregado'], ['lider', 'Liderança']], vis, 'data-eqv')}${seg([['semana', 'Semana'], ['mes', 'Mês'], ['ano', 'Ano'], ['tudo', 'Acumulado']], S.eq.per, 'data-eqp')}${periodSelect(S.eq.per)}</div>${empPills()}</div>
+      <div class="ctl"><div class="ctl-l">${seg([['hier', 'Hierarquia'], ['fiscal', 'Fiscal'], ['enc', 'Encarregado'], ['lider', 'Liderança']], vis, 'data-eqv')}${seg([['dia', 'Dia'], ['semana', 'Semana'], ['mes', 'Mês'], ['ano', 'Ano'], ['tudo', 'Acumulado']], S.eq.per, 'data-eqp')}${periodSelect(S.eq.per)}</div>${empPills()}</div>
       <div class="kpis">${kp}</div>${body}`;
   }
   const hidden = (t) => { let p = t.par; const m = {}; return false && m && p; };
 
   /* ---------- Pareto ---------- */
   function paretoData(info) {
-    const rows = rowsFor(info.weeks).filter((r) => r.programada && !r.concl && (S.emp === 'Todas' || r.empresa === S.emp));
+    const rows = rowsInfo(info).filter((r) => r.programada && !r.concl && (S.emp === 'Todas' || r.empresa === S.emp));
     const cnt = (fn, neutro) => { const m = new Map(); rows.forEach((r) => { const raw = fn(r), ck = canon(raw); const o = m.get(ck) || { k: raw, v: 0 }; o.v++; m.set(ck, o); }); return [...m.values()].map((o) => ({ k: o.k, v: o.v, neutro: neutro && neutro(o.k) })).sort((a, b) => (!!a.neutro - !!b.neutro) || b.v - a.v); };
     return {
       rows,
@@ -1717,7 +1751,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     const pendT = pend.length ? `<div class="tw tall2"><table><thead><tr><th>Semana</th><th></th><th>Atividade</th><th>Fiscal</th><th>Aderência</th><th>Causa</th><th>Responsab.</th></tr></thead><tbody>${pend.map((r) => `<tr><td>${wk(r.ws)}</td><td>${logo(r.empresa, 16)}</td><td class="desc"><b>${esc(r.a.desc)}</b><small>${esc(r.a.local || r.a.ls || '')}</small></td><td>${esc(r.a.fiscal || '—')}</td><td>${pct(r.ader)}</td><td><select class="cs" data-causa="${esc(r.key)}" data-cws="${r.ws}">${copt(causaOf(r))}</select></td><td><select class="cs" data-resp="${esc(r.key)}" data-cws="${r.ws}">${ropt(respOf(r))}</select></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">Todas as atividades não concluídas já têm causa.</p>';
     const tot = d.rows.length;
     return `${pageHead('Pareto dos motivos', `Por que não cumprimos · ${esc(info.label)}`, '')}
-      <div class="ctl"><div class="ctl-l">${seg([['semana', 'Semana'], ['mes', 'Mês'], ['ano', 'Ano'], ['tudo', 'Acumulado']], S.pa.per, 'data-pap')}${periodSelect(S.pa.per)}</div>${empPills()}</div>
+      <div class="ctl"><div class="ctl-l">${seg([['dia', 'Dia'], ['semana', 'Semana'], ['mes', 'Mês'], ['ano', 'Ano'], ['tudo', 'Acumulado']], S.pa.per, 'data-pap')}${periodSelect(S.pa.per)}</div>${empPills()}</div>
       <div class="kpis"><div class="kpi"><small>Não concluídas</small><b>${tot}</b></div><div class="kpi"><small>Principal causa</small><b class="sm-b2">${esc(d.causa[0] && !d.causa[0].neutro ? d.causa[0].k : '—')}</b></div><div class="kpi"><small>Maior responsável</small><b class="sm-b2">${esc(d.resp[0] && !d.resp[0].neutro ? d.resp[0].k : '—')}</b></div></div>
       ${(() => { const nz = d.causa.filter((i) => i.neutro).reduce((q, i) => q + i.v, 0); return nz ? `<div class="banner"><b>${nz} de ${tot}</b> não conclusões ainda estão <b>sem causa informada</b> e ficam fora do gráfico. Classifique-as na tabela abaixo para um Pareto completo.</div>` : ''; })()}
       <div class="grid2 g-wide"><section class="card"><h3 class="h">Pareto das causas</h3>${paretoCombo(d.causa, { aria: 'Pareto das causas' })}<p class="muted sm">Barras escuras = causas que, somadas, explicam cerca de 80% das não conclusões. A linha mostra o acumulado.</p></section>
@@ -1730,12 +1764,12 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
   /* ---------- Relatório ---------- */
   function reportData(per) {
-    const info = perInfo(per); const a = agg(info.weeks); const rows = rowsFor(info.weeks);
+    const info = perInfo(per); const a = aggInfo(info); const rows = rowsInfo(info);
     const prog = rows.filter((r) => r.programada);
     const emp = S.emp;
     const filt = (arr) => (emp === 'Todas' ? arr : arr.filter((r) => r.empresa === emp));
-    const pi = prevInfo(per); const pa = pi ? agg(pi.weeks) : null;
-    const hist = (per === 'ano' || per === 'mes') ? seriesFor(per === 'ano' ? 'ano' : 'mes') : seriesFor('semana');
+    const pi = prevInfo(per); const pa = pi ? aggInfo(pi) : null;
+    const hist = (per === 'ano' || per === 'mes') ? seriesFor(per === 'ano' ? 'ano' : 'mes') : per === 'dia' ? seriesFor('dia') : seriesFor('semana');
     const pd = paretoData(info);
     return {
       per, info, a, prev: pa, prevInfo: pi, emp, rows: filt(rows), prog: filt(prog), hist,
@@ -1745,7 +1779,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
         lider: groupRows(filt(prog), (r) => r.a.sup || 'Sem liderança cadastrada').sort((x, y) => y.n - x.n),
       },
       atencao: filt(prog).filter((r) => !r.concl).sort((x, y) => x.ader - y.ader || y.pAp - x.pAp).slice(0, 15),
-      diario: per === 'semana' ? seriesFor('dia') : null,
+      diario: (per === 'semana' || per === 'dia') ? seriesFor('dia') : null,
       ap: apEff(),
     };
   }
@@ -1762,7 +1796,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     return t;
   }
   function relAtencaoHtml(rd) {
-    const data = attData(rd.info.weeks, rd.emp);
+    const data = attData(rd.info, rd.emp);
     const linha = (r) => { const j = justOf(r); const cz = causaOf(r), rs = respOf(r); return `<tr><td class="desc"><b>${esc(r.a.desc)}</b><small>${esc([r.a.local, r.a.serv].filter(Boolean).join(' · '))}</small><small>${wk(r.ws)} · ${esc(r.a.fiscal || 'sem fiscal')}${r.a.enc ? ' · ' + esc(r.a.enc) : ''}</small></td><td class="r">${fnum(r.pAp)} <small>${esc(r.a.un)}</small></td><td class="r">${fnum(r.rAp)} <small>${esc(r.a.un)}</small></td><td>${bar(r.ader)}<span class="bn">${pct(r.ader)}</span></td><td>${cz ? `<b>${esc(cz)}</b>` : '<span class="muted">sem causa</span>'}${rs ? `<small>${esc(rs)}</small>` : ''}</td><td class="jt">${j ? esc(j) : '<span class="muted">sem justificativa</span>'}</td></tr>`; };
     const grupo = (titulo, tone, rows) => !rows.length ? '' : `<h5 class="gh gh-${tone}">${titulo} <span>${rows.length}</span></h5><div class="tw"><table class="att"><thead><tr><th>Atividade</th><th class="r">Previsto</th><th class="r">Realizado</th><th>Aderência</th><th>Causa · Responsável</th><th>Justificativa</th></tr></thead><tbody>${rows.slice(0, 25).map(linha).join('')}</tbody></table></div>${rows.length > 25 ? `<p class="muted sm">+ ${rows.length - 25} atividades — lista completa no Excel (aba Pontos de atenção).</p>` : ''}`;
     return data.map((z) => {
@@ -1780,7 +1814,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     const empRows = empresas.filter((e) => rd.emp === 'Todas' || rd.emp === e).map((e) => { const z = rd.a.por[e]; return `<tr><td>${empTag(e, 18)}</td><td class="r">${z.n}</td><td class="r t-ok">${z.c}</td><td class="r t-warn">${z.p}</td><td class="r t-bad">${z.x}</td><td>${bar(z.ppc)}<span class="bn t-${sem(z.ppc)}">${pct(z.ppc)}</span></td><td class="r">${pct(z.ader)}</td></tr>`; }).join('');
     const ins = insightsFor(v, rd.a.por).map((i) => `<li class="ins-${i.t}">${esc(i.x)}</li>`).join('');
     return `${pageHead('Relatório', 'Monte o relatório para enviar ou apresentar: PDF com os principais indicadores e Excel com todas as tabelas.', '')}
-      <div class="ctl"><div class="ctl-l">${seg([['semana', 'Semanal'], ['mes', 'Mensal'], ['ano', 'Anual'], ['tudo', 'Acumulado']], S.rel.per, 'data-relp')}${periodSelect(S.rel.per)}</div>${empPills()}</div>
+      <div class="ctl"><div class="ctl-l">${seg([['dia', 'Diário'], ['semana', 'Semanal'], ['mes', 'Mensal'], ['ano', 'Anual'], ['tudo', 'Acumulado']], S.rel.per, 'data-relp')}${periodSelect(S.rel.per)}</div>${empPills()}</div>
       ${btns}
       <article class="paper"><header class="paper-h"><span class="lg lg-vale" style="--h:30px"><img src="${LOGOS.vale || ''}" alt="Vale"></span><div><span class="eyebrow">Relatório de PPC · Projeto CPF · SLB III</span><h3>${esc(rd.info.titulo)}${rd.emp !== 'Todas' ? ' · ' + esc(rd.emp) : ''}</h3></div></header>
       <div class="paper-k"><div><b class="t-${sem(v.ppc)}">${pct(v.ppc)}</b><span>PPC ${rd.prev ? deltaTxt(v.ppc, rd.prev.view(rd.emp).ppc, rd.prevInfo.curto) : ''}</span></div><div><b>${pct(v.ader)}</b><span>Aderência</span></div><div><b>${v.n}</b><span>Programadas</span></div><div><b>${v.c}</b><span>Concluídas</span></div><div><b class="t-warn">${v.p}</b><span>Parciais</span></div><div><b class="t-bad">${v.x}</b><span>Não executadas</span></div></div>
@@ -1837,7 +1871,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   async function openProj(id) {
     S.proj = id; S.files = []; S.blocks = []; S.overrides = {}; S.apEd = {}; S.ws = null; S.mes = S.ano = S.dia = null; S.emp = 'Todas'; S.seq = 0; S.closed = {};
     S.cons = wget('cons', {}); S.causa = wget('causa', {}); S.resp = wget('resp', {}); S.supMap = wget('supMap', {}); S.just = wget('just', {});
-    S.f = { q: '', status: '', fiscal: '', emp: '' }; S.busy = ''; recompute();
+    S.f = { q: '', status: '', fiscal: '', emp: '', di: '' }; S.busy = ''; recompute();
     const saved = await idb.list(id + '|');
     if (saved.length) { saved.sort((p, q) => p.mtime - q.mtime); await readFiles(saved.map((r) => ({ name: r.name, size: r.size, lastModified: r.mtime, arrayBuffer: async () => r.buf })), { restore: true }); }
     go(S.merged.acts.length ? 'resumo' : 'carregar');
@@ -1934,7 +1968,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
   /* ---------- eventos ---------- */
   document.addEventListener('click', (ev) => {
-    const t = ev.target.closest('[data-tab],[data-go],[data-emp],[data-wk],[data-rm],[data-gran],[data-dia],[data-eqv],[data-eqp],[data-pap],[data-relp],[data-tg],[data-logo-reset],[data-jump],[data-pjgo],[data-pjhub],[data-pjarea],[data-pjnew],[data-pjedit],[data-pjdel],[data-pjsave],[data-pjcancel],#totop,#pdf,#xlsx,#wpp,#clr,#theme');
+    const t = ev.target.closest('[data-tab],[data-go],[data-emp],[data-wk],[data-rm],[data-gran],[data-dia],[data-fclear],[data-fcsv],[data-eqv],[data-eqp],[data-pap],[data-relp],[data-tg],[data-logo-reset],[data-jump],[data-pjgo],[data-pjhub],[data-pjarea],[data-pjnew],[data-pjedit],[data-pjdel],[data-pjsave],[data-pjcancel],#totop,#pdf,#xlsx,#wpp,#clr,#theme');
     if (!t) return;
     const d = t.dataset;
     if (d.tab) return go(d.tab);
@@ -1944,6 +1978,14 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     if (d.rm) return removeFile(+d.rm);
     if (d.gran) { S.gran = d.gran; return render(); }
     if (d.dia) { S.dia = d.dia; return render(); }
+    if (d.fclear) { S.f = { q: '', status: '', fiscal: '', emp: '', di: '' }; return render(); }
+    if (d.fcsv) {
+      const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; const rows = actRows();
+      const head = ['Empresa', 'Semana', 'Dia', 'ID', 'Atividade', 'Local', 'Fiscal', 'Encarregado', 'Liderança', 'Un.', 'Previsto', 'Realizado', 'Aderência', 'Status', 'Causa', 'Responsável', 'Justificativa'];
+      const lines = rows.map((r) => [r.empresa, wk(r.ws), r.dia ? E.fmtBR(r.dia) : '', r.a.id, r.a.desc, r.a.local, r.a.fiscal, r.a.enc, r.a.sup, r.a.un, r.pAp, r.rAp, r.ader == null ? '' : Math.round(r.ader * 100) + '%', r.status, r.programada && !r.concl ? causaOf(r) : '', r.programada && !r.concl ? respOf(r) : '', r.programada && !r.concl ? justOf(r) : ''].map(q).join(';'));
+      const blob = new Blob(['\ufeff' + [head.map(q).join(';')].concat(lines).join('\r\n')], { type: 'text/csv;charset=utf-8' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'atividades_' + wk(S.ws) + (S.f.di !== '' ? '_dia' + (+S.f.di + 1) : '') + '.csv'; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500); return toast('CSV gerado');
+    }
     if (d.eqv) { S.eq.vis = d.eqv; return render(); }
     if (d.eqp) { S.eq.per = d.eqp; return render(); }
     if (d.pap) { S.pa.per = d.pap; return render(); }
@@ -2186,10 +2228,10 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     const hist = rd.hist; const lim = lineCanvas(ctx, hist, ['Todas'].concat(rd.emp === 'Todas' ? emps : []), 1000, 300);
     const iw = PW - 2 * M, ih = (lim.h / lim.w) * iw; doc.addImage(lim.url, 'PNG', M, y + 4, iw, ih, undefined, 'FAST');
     y = y + 4 + ih + 6;
-    if (rd.per === 'semana' && rd.diario) { const dl = diaCanvas(ctx, rd.diario, rd.emp === 'Todas' ? emps : [rd.emp], 1000, 270); const dh = (dl.h / dl.w) * iw; h2('Previsto x realizado por dia', y); doc.addImage(dl.url, 'PNG', M, y + 4, iw, dh, undefined, 'FAST'); y = y + 4 + dh + 6; }
-    h2(rd.per === 'semana' ? 'Dia a dia da semana' : rd.per === 'ano' ? 'Mês a mês' : 'Por período', y); y += 4;
+    if ((rd.per === 'semana' || rd.per === 'dia') && rd.diario) { const dl = diaCanvas(ctx, rd.diario, rd.emp === 'Todas' ? emps : [rd.emp], 1000, 270); const dh = (dl.h / dl.w) * iw; h2('Previsto x realizado por dia', y); doc.addImage(dl.url, 'PNG', M, y + 4, iw, dh, undefined, 'FAST'); y = y + 4 + dh + 6; }
+    h2((rd.per === 'semana' || rd.per === 'dia') ? 'Dia a dia da semana' : rd.per === 'ano' ? 'Mês a mês' : 'Por período', y); y += 4;
     let rowsT;
-    if (rd.per === 'semana' && rd.diario) rowsT = rd.diario.map((p) => [safe(p.label + ' ' + p.sub), ...emps.flatMap((e) => [String(p.st.por[e].n || '-'), ppcCell(p.st.por[e].ppc, p.st.por[e].n)]), String(p.st.tot.n || '-'), ppcCell(p.st.tot.ppc, p.st.tot.n)]);
+    if ((rd.per === 'semana' || rd.per === 'dia') && rd.diario) rowsT = rd.diario.map((p) => [safe(p.label + ' ' + p.sub), ...emps.flatMap((e) => [String(p.st.por[e].n || '-'), ppcCell(p.st.por[e].ppc, p.st.por[e].n)]), String(p.st.tot.n || '-'), ppcCell(p.st.tot.ppc, p.st.tot.n)]);
     else rowsT = hist.filter((p) => p.st.tot.n).slice(-8).map((p) => [safe(p.label), ...emps.flatMap((e) => [String(p.st.por[e].n || '-'), ppcCell(p.st.por[e].ppc, p.st.por[e].n)]), String(p.st.tot.n || '-'), ppcCell(p.st.tot.ppc, p.st.tot.n)]);
     doc.autoTable(Object.assign({}, tableDefaults, { startY: y, head: [['Período', ...emps.flatMap((e) => [e + ' n', e + ' PPC']), 'Total n', 'PPC geral']], body: rowsT, columnStyles: { 0: { cellWidth: 38 } }, bodyStyles: { halign: 'center' }, styles: Object.assign({}, tableDefaults.styles, { fontSize: 7.8, cellPadding: 1.3 }) }));
 
@@ -2237,7 +2279,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
     /* ---- Pontos de atenção por empresa ---- */
     doc.addPage(); header('Pontos de atenção por empresa', 'Não realizadas, parciais e justificativa'); y = 34;
-    ctx.attData(rd.info.weeks, rd.emp).forEach((z) => {
+    ctx.attData(rd.info, rd.emp).forEach((z) => {
       if (y > PH - 50) { doc.addPage(); header('Pontos de atenção por empresa', 'continuação'); y = 34; }
       h2(`${z.e}  -  ${z.nx} nao realizada(s) | ${z.np} parcial(is) | ${z.c} de ${z.n} concluidas`, y); y += 4;
       if (!z.rows.length) { note(z.n ? 'Sem pendencias: todas as atividades programadas foram concluidas.' : 'Nenhuma atividade programada apurada no periodo.', M, y + 4); y += 12; return; }
@@ -2347,7 +2389,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     const used2 = pc ? placeImg(pc, 1 + 700 / 99 + 0.15, r - 1, 470) : 0;
     if (!pc) { const c = ws.getCell(r + 2, 10); c.value = 'Pareto das causas: nenhuma não conclusão classificada ainda.'; c.font = { name: 'Calibri', size: 10, italic: true, color: { argb: A.mute } }; }
     r += Math.max(used1, used2, 16) + 1;
-    if (rd.per === 'semana' && rd.diario) { const dc = diaCanvas(ctx, rd.diario, empsV, 700, 300); const u5 = placeImg(dc, 1, r - 1, 700); r += u5 + 1; }
+    if ((rd.per === 'semana' || rd.per === 'dia') && rd.diario) { const dc = diaCanvas(ctx, rd.diario, empsV, 700, 300); const u5 = placeImg(dc, 1, r - 1, 700); r += u5 + 1; }
     const bars = barsCanvas(ctx, empsV.map((e) => ({ k: e, v: nz(rd.a.por[e].ppc) })).concat(empsV.length > 1 ? [{ k: 'Total', v: nz(rd.a.tot.ppc) }] : []), 700);
     const used3 = placeImg(bars, 1, r - 1, 700);
     const pr = paretoCanvas(ctx, rd.pareto.resp, 470);
@@ -2417,7 +2459,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     add('Atividades', at, [8, 10, 10, 50, 28, 24, 16, 18, 18, 6, 11, 11, 10, 10, 14, 10, 26, 18], { pct: [13], sem: [13] });
     {
       const pa = [['Empresa', 'Situação', 'Semana', 'Atividade', 'Local / serviço', 'Fiscal', 'Encarregado', 'Previsto', 'Realizado', 'Un.', 'Aderência', 'Causa', 'Responsabilidade', 'Justificativa']];
-      ctx.attData(rd.info.weeks, rd.emp).forEach((z) => z.rows.forEach((r2) => pa.push([z.e, r2.parcial ? 'Parcial' : 'Não realizada', ctx.wk(r2.ws), r2.a.desc, [r2.a.local, r2.a.serv].filter(Boolean).join(' · '), r2.a.fiscal || '', r2.a.enc || '', r2.pAp, r2.rAp, r2.a.un, nz(r2.ader), ctx.causaOf(r2) || '', ctx.respOf(r2) || '', ctx.justOf(r2) || ''])));
+      ctx.attData(rd.info, rd.emp).forEach((z) => z.rows.forEach((r2) => pa.push([z.e, r2.parcial ? 'Parcial' : 'Não realizada', ctx.wk(r2.ws), r2.a.desc, [r2.a.local, r2.a.serv].filter(Boolean).join(' · '), r2.a.fiscal || '', r2.a.enc || '', r2.pAp, r2.rAp, r2.a.un, nz(r2.ader), ctx.causaOf(r2) || '', ctx.respOf(r2) || '', ctx.justOf(r2) || ''])));
       add('Pontos de atenção', pa, [11, 14, 8, 50, 34, 16, 18, 10, 10, 6, 10, 26, 18, 44], { pct: [10], sem: [10] });
     }
     const pjd = ctx.projetosData(per);

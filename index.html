@@ -662,36 +662,56 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   function merge(blocks, overrides = {}) {
     // blocos mais antigos primeiro; o mais recente prevalece. A planilha-mestra (Entrada) é base: só preenche semanas
     // que nenhuma programação (Sprint/PROG) cobre para a empresa e enriquece os demais com causa/fiscal.
-    const sorted = blocks.slice().sort((a, b) => (a.mtime || 0) - (b.mtime || 0) || (a.prio || 0) - (b.prio || 0));
+    // recência por ARQUIVO = semana mais recente que ele cobre (um PDF antigo baixado depois não sobrescreve a planilha
+    // atualizada); empate → data do arquivo. O arquivo mais recente é a verdade para os dias que ele cobre: o que ele não
+    // traz nesses dias (atividade removida, dia desprogramado) deixa de valer.
+    const lastD = (b) => (b.dates && b.dates.length ? b.dates[b.dates.length - 1] : '');
+    const groups = new Map();
+    for (const b of blocks) { const g = groups.get(b.file) || { file: b.file, bl: [], last: '', mtime: 0 }; g.bl.push(b); if (lastD(b) > g.last) g.last = lastD(b); g.mtime = Math.max(g.mtime, b.mtime || 0); groups.set(b.file, g); }
+    const order = [...groups.values()].sort((a, b) => (a.last < b.last ? -1 : a.last > b.last ? 1 : 0) || a.mtime - b.mtime);
     const map = new Map();
     const conflicts = [];
     const used = [];
     const ent = [];
-    for (const b of sorted) {
-      if (b.kind === 'entrada') { used.push(b); ent.push(b); continue; }
-      const det = overrides[b.id] || b.det;
-      if (!det) continue;
-      used.push(b);
-      for (const a of b.acts) {
-        const act = Object.assign({}, a, { empresa: det.empresa, pacote: det.pacote });
-        const k = keyOf(act);
-        const cur = map.get(k);
-        if (!cur) {
-          map.set(k, Object.assign(act, { key: k, P: Object.assign({}, a.P), R: Object.assign({}, a.R), meta: {}, cons: {}, fontes: [b.file + ' › ' + b.sheet] }));
-          continue;
+    for (const G of order) {
+      const seen = new Map(); // key -> {P:Set, R:Set} dias trazidos por este arquivo
+      const pairs = new Set(); const days = new Set();
+      for (const b of G.bl.slice().sort((x, y) => (x.prio || 0) - (y.prio || 0))) {
+        if (b.kind === 'entrada') { used.push(b); ent.push(b); continue; }
+        const det = overrides[b.id] || b.det;
+        if (!det) continue;
+        used.push(b);
+        pairs.add(det.empresa + '|' + det.pacote); (b.dates || []).forEach((d) => days.add(d));
+        for (const a of b.acts) {
+          const act = Object.assign({}, a, { empresa: det.empresa, pacote: det.pacote });
+          const k = keyOf(act);
+          const sv = seen.get(k) || { P: new Set(), R: new Set() }; seen.set(k, sv);
+          Object.keys(a.P).forEach((d) => sv.P.add(d)); Object.keys(a.R).forEach((d) => sv.R.add(d));
+          const cur = map.get(k);
+          if (!cur) {
+            map.set(k, Object.assign(act, { key: k, P: Object.assign({}, a.P), R: Object.assign({}, a.R), meta: {}, cons: {}, fontes: [b.file + ' › ' + b.sheet] }));
+            continue;
+          }
+          for (const d of Object.keys(a.P)) {
+            if (cur.P[d] != null && Math.abs(cur.P[d] - a.P[d]) > EPS) conflicts.push({ key: k, d, tipo: 'P', antes: cur.P[d], depois: a.P[d], file: b.file });
+            cur.P[d] = a.P[d];
+          }
+          for (const d of Object.keys(a.R)) {
+            if (cur.R[d] != null && Math.abs(cur.R[d] - a.R[d]) > EPS) conflicts.push({ key: k, d, tipo: 'R', antes: cur.R[d], depois: a.R[d], file: b.file });
+            cur.R[d] = a.R[d];
+          }
+          for (const f of ['fiscal', 'resp', 'enc', 'local', 'serv', 'frente', 'rac', 'sup', 'secao', 'grupo', 'un']) if (a[f]) cur[f] = a[f];
+          if (a.status) cur.status = a.status;
+          if (a.obs) cur.obs = a.obs;
+          if (!cur.fontes.includes(b.file + ' › ' + b.sheet)) cur.fontes.push(b.file + ' › ' + b.sheet);
         }
-        for (const d of Object.keys(a.P)) {
-          if (cur.P[d] != null && Math.abs(cur.P[d] - a.P[d]) > EPS) conflicts.push({ key: k, d, tipo: 'P', antes: cur.P[d], depois: a.P[d], file: b.file });
-          cur.P[d] = a.P[d];
-        }
-        for (const d of Object.keys(a.R)) {
-          if (cur.R[d] != null && Math.abs(cur.R[d] - a.R[d]) > EPS) conflicts.push({ key: k, d, tipo: 'R', antes: cur.R[d], depois: a.R[d], file: b.file });
-          cur.R[d] = a.R[d];
-        }
-        for (const f of ['fiscal', 'resp', 'enc', 'local', 'serv', 'frente', 'rac', 'sup', 'secao', 'grupo', 'un']) if (a[f]) cur[f] = a[f];
-        if (a.status) cur.status = a.status;
-        if (a.obs) cur.obs = a.obs;
-        cur.fontes.push(b.file + ' › ' + b.sheet);
+      }
+      if (!days.size) continue;
+      for (const [k, cur] of map) {
+        if (!pairs.has(cur.empresa + '|' + cur.pacote)) continue;
+        const sv = seen.get(k);
+        for (const d of Object.keys(cur.P)) if (days.has(d) && !(sv && sv.P.has(d))) { conflicts.push({ key: k, d, tipo: 'P', antes: cur.P[d], depois: null, file: G.file }); delete cur.P[d]; }
+        for (const d of Object.keys(cur.R)) if (days.has(d) && !(sv && sv.R.has(d))) { conflicts.push({ key: k, d, tipo: 'R', antes: cur.R[d], depois: null, file: G.file }); delete cur.R[d]; }
       }
     }
     if (ent.length) {
@@ -770,7 +790,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   const DEFAULT_RULES = {
     exigirCampos: true,     // descrição, local, serviço e responsável preenchidos
     statusNaoIniciado: false, // (opcional) A INICIAR / NÃO INICIADO sem realizado saem do PPC
-    antecipadas: true,       // realizado sem previsto conta como programada e concluída
+    antecipadas: false,      // (opcional) realizado sem previsto conta como programada e concluída
     cortarFuturo: true,      // ignora realizado depois da data de apuração
     respeitarN: true,        // respeita a marcação Consid. = N da planilha-mestra
   };
@@ -801,7 +821,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
       const pTot = Pe.reduce((s, v) => s + (v > 0 ? v : 0), 0);
       const st = norm(a.status);
       let motivo = '';
-      if (!hasProgWeek && !(antecipada && rules.antecipadas)) motivo = 'Sem previsto na semana';
+      if (!hasProgWeek && !(antecipada && rules.antecipadas)) motivo = antecipada ? 'Realizado sem programação na semana (não conta no PPC)' : 'Sem previsto na semana';
       else if (rules.respeitarN && a.cons && a.cons[ws] === false) motivo = 'Marcada N (fora do PPC) na planilha';
       else if (rules.exigirCampos && (!a.desc || (a.lay.local && !a.local) || (a.lay.serv && !a.serv) || (a.lay.resp && !a.resp)))
         motivo = 'Campos obrigatórios em branco';
@@ -818,7 +838,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
         P: Pe, R, pTot, pAp, rAp, antecipada, considerar, motivo,
         programada, concl, parcial, naoExec: programada && rAp <= EPS, ader,
         aguardando: considerar && pTot > EPS && pAp <= EPS, // programada para depois da data de apuração
-        status: concl ? 'Concluída' : parcial ? 'Parcial' : programada ? 'Não executada' : (considerar && pTot > EPS ? 'A apurar' : 'Fora do PPC'),
+        status: concl ? 'Concluída' : parcial ? 'Parcial' : programada ? 'Não executada' : (considerar && pTot > EPS ? 'A apurar' : antecipada ? 'Antecipada' : 'Fora do PPC'),
       });
     }
     return out;
@@ -1187,7 +1207,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
   const S = {
     files: [], blocks: [], overrides: {}, merged: { acts: [], conflicts: [], used: [] }, cad: null,
-    rules: Object.assign({}, E.DEFAULT_RULES, (() => { const r = store.get('rules', {}); if (store.get('rulesV', 0) < 2) { delete r.statusNaoIniciado; store.set('rules', r); store.set('rulesV', 2); } return r; })()),
+    rules: Object.assign({}, E.DEFAULT_RULES, (() => { const r = store.get('rules', {}); const v = store.get('rulesV', 0); if (v < 2) delete r.statusNaoIniciado; if (v < 3) delete r.antecipadas; if (v < 3) { store.set('rules', r); store.set('rulesV', 3); } return r; })()),
     meta: store.get('meta2', 0.9),
     cons: store.get('cons', {}), causa: store.get('causa', {}), resp: store.get('resp', {}), supMap: store.get('supMap', {}), logos: store.get('logos', {}),
     apEd: {}, ws: null, mes: null, ano: null, dia: null, emp: 'Todas', tab: 'carregar', gran: 'semana',

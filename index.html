@@ -1860,7 +1860,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
   /* ---------- Fontes ---------- */
   function tabFontes() {
-    const nm = { apia: 'ÁPIA', luk: 'LUK', milplan: 'MILPLAN', vale: 'Vale' };
+    const nm = { apia: 'ÁPIA', luk: 'LUK', milplan: 'MILPLAN', vale: 'Logo do site' };
     const lg = Object.keys(LOGOS).map((k) => `<div class="lgm"><span class="lg ${S.logos[k] ? 'lg-custom' : 'lg-' + k}" style="--h:34px"><img src="${logoSrc(k)}" alt="${k}"></span><b>${nm[k]}</b><label class="btn ghost sm-b">Trocar<input type="file" accept="image/*" hidden data-logo="${k}"></label>${S.logos[k] ? `<button class="lnk" data-logo-reset="${k}">restaurar</button>` : ''}</div>`).join('');
     const conf = S.merged.conflicts;
     const used = S.merged.used.map((b) => `<tr><td>${esc(b.file)}</td><td>${esc(b.sheet.trim())}</td><td>${b.kind === 'entrada' ? 'Planilha-mestra' : (S.overrides[b.id] || b.det) ? esc((S.overrides[b.id] || b.det).pacote) : '—'}</td><td class="r">${b.acts.length}</td><td>${new Date(b.mtime).toLocaleDateString('pt-BR')}</td></tr>`).join('');

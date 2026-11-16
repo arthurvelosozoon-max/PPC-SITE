@@ -304,6 +304,16 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .brand-mark img { object-fit: contain; filter: drop-shadow(0 2px 6px rgba(0,0,0,.35)); }
 @media (max-width: 640px) { .brand-mark { width: 56px; height: 56px; } }
 
+/* v11 · relatório na tela */
+.paper-k span .delta { display: flex; width: fit-content; margin-top: 6px; text-transform: none; letter-spacing: 0; font-size: 12px; white-space: nowrap; }
+.paper-k span .delta em { margin-left: 4px; font-style: normal; opacity: .8; }
+.paper-k em.apur { display: block; margin-top: 4px; text-transform: none; letter-spacing: 0; font-style: normal; font-size: 12px; color: var(--muted, #6e7c82); }
+
+/* v11 · painel do gestor */
+.pjbtns { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.vw-chip { margin-left: 8px; vertical-align: middle; font-size: 11.5px; }
+.sw-meta { background: none !important; border: 0 !important; border-top: 2px dashed #e0a800 !important; height: 0 !important; width: 16px !important; align-self: center; }
+
 </style>
 <header class="top"><div class="top-in">
   <div class="brand"><span id="brand-logo"></span><div><h1>PPC · Contratadas CPF</h1><p>Projeto CPF · SLB III — Planejamento e Controle</p></div></div>
@@ -398,13 +408,33 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     return m;
   }
 
+  const MESES = { JAN: 1, FEB: 2, FEV: 2, MAR: 3, APR: 4, ABR: 4, MAY: 5, MAI: 5, JUN: 6, JUL: 7, AUG: 8, AGO: 8, SEP: 9, SET: 9, OCT: 10, OUT: 10, NOV: 11, DEC: 12, DEZ: 12 };
+  const iso3 = (y, m, d) => (m >= 1 && m <= 12 && d >= 1 && d <= 31 ? `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}` : null);
+  // datas escritas como texto ("6-Oct", "06/out", "06/10", "06/10/2026"), comuns quando a célula é fórmula =ANTERIOR+1
+  function textDate(v, yRef) {
+    const t = norm(v).replace(/\.$/, '');
+    let m = t.match(/^(\d{1,2})[-\/ ]([A-Z]{3})[A-Z]*(?:[-\/ ](\d{2,4}))?$/);
+    if (m && MESES[m[2]]) { const y = m[3] ? (m[3].length === 2 ? 2000 + +m[3] : +m[3]) : yRef; return iso3(y, MESES[m[2]], +m[1]); }
+    m = t.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/);
+    if (m) { const y = m[3] ? (m[3].length === 2 ? 2000 + +m[3] : +m[3]) : yRef; return iso3(y, +m[2], +m[1]); }
+    return null;
+  }
   function findDates(rows, hr, pr) {
     let best = null;
+    let yRef = null;
+    for (let r = hr; r <= hr + 4 && r < rows.length && !yRef; r++) for (const v of rows[r] || []) if (isSerial(v)) { yRef = +serialToIso(v).slice(0, 4); break; }
+    if (!yRef) yRef = new Date().getUTCFullYear();
     for (let r = hr; r <= hr + 4 && r < rows.length; r++) {
       const row = rows[r] || [];
       const map = {};
-      let n = 0;
-      for (let c = pr + 1; c < row.length; c++) if (isSerial(row[c])) { map[c] = serialToIso(row[c]); n++; }
+      for (let c = pr + 1; c < row.length; c++) {
+        if (isSerial(row[c])) map[c] = serialToIso(row[c]);
+        else if (typeof row[c] === 'string') { const d = textDate(row[c], yRef); if (d) map[c] = d; }
+      }
+      // ano virando (dez → jan) em datas de texto sem ano
+      const cs = Object.keys(map).map(Number).sort((a, b) => a - b);
+      for (let i = 1; i < cs.length; i++) if (map[cs[i]] < map[cs[i - 1]] && Date.parse(map[cs[i - 1]]) - Date.parse(map[cs[i]]) > 300 * MS) map[cs[i]] = (+map[cs[i]].slice(0, 4) + 1) + map[cs[i]].slice(4);
+      const n = cs.length;
       if (!best || n > best.n) best = { r, map, n };
     }
     return best && best.n >= 3 ? best : null;
@@ -739,7 +769,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
   const DEFAULT_RULES = {
     exigirCampos: true,     // descrição, local, serviço e responsável preenchidos
-    statusNaoIniciado: true, // A INICIAR / NÃO INICIADO sem realizado saem do PPC
+    statusNaoIniciado: false, // (opcional) A INICIAR / NÃO INICIADO sem realizado saem do PPC
     antecipadas: true,       // realizado sem previsto conta como programada e concluída
     cortarFuturo: true,      // ignora realizado depois da data de apuração
     respeitarN: true,        // respeita a marcação Consid. = N da planilha-mestra
@@ -1157,7 +1187,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
   const S = {
     files: [], blocks: [], overrides: {}, merged: { acts: [], conflicts: [], used: [] }, cad: null,
-    rules: Object.assign({}, E.DEFAULT_RULES, store.get('rules', {})),
+    rules: Object.assign({}, E.DEFAULT_RULES, (() => { const r = store.get('rules', {}); if (store.get('rulesV', 0) < 2) { delete r.statusNaoIniciado; store.set('rules', r); store.set('rulesV', 2); } return r; })()),
     meta: store.get('meta2', 0.9),
     cons: store.get('cons', {}), causa: store.get('causa', {}), resp: store.get('resp', {}), supMap: store.get('supMap', {}), logos: store.get('logos', {}),
     apEd: {}, ws: null, mes: null, ano: null, dia: null, emp: 'Todas', tab: 'carregar', gran: 'semana',
@@ -1406,7 +1436,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     const y = (v) => T + (1 - v) * (H - T - B);
     let g = `<rect x="${L}" y="${y(1)}" width="${Wd - L - Rr}" height="${y(S.meta) - y(1)}" class="band"/>`;
     [0, 0.25, 0.5, 0.75, 1].forEach((t) => { g += `<line x1="${L}" x2="${Wd - Rr}" y1="${y(t)}" y2="${y(t)}" class="grid"/><text x="${L - 8}" y="${y(t) + 4}" text-anchor="end" class="ax">${t * 100}%</text>`; });
-    g += `<line x1="${L}" x2="${Wd - Rr}" y1="${y(S.meta)}" y2="${y(S.meta)}" class="meta"/><text x="${L + 6}" y="${y(S.meta) - 5}" class="ax meta-t">meta ${Math.round(S.meta * 100)}%</text>`;
+    g += `<line x1="${L}" x2="${Wd - Rr}" y1="${y(S.meta)}" y2="${y(S.meta)}" class="meta"/>`;
     const step = Math.ceil(n / 14);
     points.forEach((p, i) => { if (i % step === 0 || p.on) g += `<text x="${x(i)}" y="${H - 12}" text-anchor="middle" class="ax ${p.on ? 'ax-on' : ''}">${esc(p.label)}</text>${p.sub ? `<text x="${x(i)}" y="${H - 1}" text-anchor="middle" class="ax ax-sm">${esc(p.sub)}</text>` : ''}`; });
     const ord = keys.slice().sort((a, b) => (a === 'Todas') - (b === 'Todas')); const clsOf = (k) => (k === 'Todas' ? 'all' : LOGO_KEY[k]);
@@ -1419,12 +1449,12 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     });
     const small = n > 10;
     points.forEach((p, i) => {
-      const its = ord.filter((k) => p.v[k] != null).map((k) => ({ k, y: y(p.v[k]) - 9, v: p.v[k] }));
-      spreadLabels(its, 12).forEach((it) => { if (i === n - 1) return; g += `<text x="${x(i).toFixed(1)}" y="${it.y.toFixed(1)}" text-anchor="middle" class="dl dlc-${clsOf(it.k)}${small ? ' dl-s' : ''}">${Math.round(it.v * 100)}</text>`; });
+      const seen = new Set(); const its = ord.slice().reverse().filter((k) => { if (p.v[k] == null) return false; const r = Math.round(p.v[k] * 100); if (seen.has(r)) return false; seen.add(r); return true; }).map((k) => ({ k, y: y(p.v[k]) - 9, v: p.v[k] }));
+      spreadLabels(its, 13).forEach((it) => { if (i === n - 1) return; g += `<text x="${x(i).toFixed(1)}" y="${it.y.toFixed(1)}" text-anchor="middle" class="dl dlc-${clsOf(it.k)}${small ? ' dl-s' : ''}">${Math.round(it.v * 100)}</text>`; });
     });
     const last = points[n - 1];
     if (last) { const its = ord.filter((k) => last.v[k] != null).map((k) => ({ k, y: y(last.v[k]) + 4, v: last.v[k] })); spreadLabels(its, 14).forEach((it) => { g += `<text x="${x(n - 1) + 9}" y="${it.y.toFixed(1)}" class="dl dl-end dlc-${clsOf(it.k)}">${esc(it.k === 'Todas' ? (nameAll || 'Consolidado') : it.k)} ${Math.round(it.v * 100)}%</text>`; }); }
-    const leg = keys.map((k) => `<span class="lgd"><i class="sw sw-${clsOf(k)}"></i>${k === 'Todas' ? esc(nameAll || 'Consolidado') : esc(k)}</span>`).join('') + `<span class="lgd"><i class="sw sw-band"></i>zona da meta (≥ ${Math.round(S.meta * 100)}%)</span>`;
+    const leg = keys.map((k) => `<span class="lgd"><i class="sw sw-${clsOf(k)}"></i>${k === 'Todas' ? esc(nameAll || 'Consolidado') : esc(k)}</span>`).join('') + `<span class="lgd"><i class="sw sw-band"></i>zona da meta (≥ ${Math.round(S.meta * 100)}%)</span><span class="lgd"><i class="sw sw-meta"></i>meta ${Math.round(S.meta * 100)}%</span>`;
     return `<div class="legend">${leg}</div><svg viewBox="0 0 ${Wd} ${H}" class="chart" role="img" aria-label="Evolução do PPC">${g}</svg>`;
   }
   function diaChart(ser, emps) {
@@ -1630,14 +1660,14 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     const kp = (l, val, sub) => `<div class="hk"><b>${val}</b><span>${l}</span>${sub ? `<small>${sub}</small>` : ''}</div>`;
     const hero = `<section class="hero"><div class="hero-g">${gauge(v.ppc, 148, true)}</div>
       <div class="hero-m"><span class="eyebrow">PPC · ${esc(titulo)}</span><div class="hero-n g-${sem(v.ppc)}">${pct(v.ppc)}</div><div class="hero-d"><span class="chip chip-${sem(v.ppc)}">Meta ${Math.round(S.meta * 100)}%${v.n && v.ppc != null && v.ppc < S.meta ? (() => { const q = Math.max(0, Math.ceil(S.meta * v.n - 1e-9) - v.c); return ' · faltam ' + q + (q === 1 ? ' concluída' : ' concluídas'); })() : v.ppc != null ? ' · atingida' : ''}</span>${deltaTxt(v.ppc, prevTot, prevRef)}<span class="muted2">${v.c} de ${v.n} programadas concluídas</span></div></div>
-      <div class="hero-k">${kp('Aderência', pct(v.ader))}${kp('Programadas', v.n)}${kp('Concluídas', v.c)}${kp('Parciais', v.p == null ? '·' : v.p)}${kp('Não executadas', v.x == null ? '·' : v.x)}${kp('Antecipadas', v.ant == null ? '·' : v.ant)}</div></section>`;
+      <div class="hero-k">${kp('Aderência', pct(v.ader))}${kp('Programadas', v.n + (v.apur || 0), v.apur ? `${v.n} apuradas · ${v.apur} a apurar` : '')}${kp('Concluídas', v.c)}${kp('Parciais', v.p == null ? '·' : v.p)}${kp('Não executadas', v.x == null ? '·' : v.x)}${kp('Antecipadas', v.ant == null ? '·' : v.ant)}</div></section>`;
     const ap = apEff();
     const ins = insightsFor(v, cur.por);
     const insHtml = ins.length ? `<section class="card ins"><h3 class="h">Destaques</h3><ul>${ins.map((i) => `<li class="i-${i.t}"><i></i><span>${esc(i.x)}</span></li>`).join('')}</ul></section>` : '';
     const cards = empresas.filter((e) => S.emp === 'Todas' || S.emp === e).map((e) => {
       const z = cur.por[e]; const none = !ap[e] ? '<p class="note">Sem realizado lançado — programação aguardando apuração.</p>' : '';
       return `<article class="card ec" data-go="equipes" data-femp="${esc(e)}"><header>${logo(e, 26)}<div><h3>${esc(e)}</h3><span class="muted">${ap[e] ? 'apurado até ' + E.fmtBR(ap[e]) : 'sem apuração'}</span></div></header>
-        <div class="ec-b">${gauge(z.ppc, 92)}<dl><div><dt>Aderência</dt><dd>${pct(z.ader)}</dd></div><div><dt>Programadas</dt><dd>${z.n}</dd></div><div><dt>Concluídas</dt><dd class="t-ok">${z.c}</dd></div><div><dt>Não exec.</dt><dd class="t-bad">${z.x == null ? '·' : z.x}</dd></div></dl></div>${none}</article>`;
+        <div class="ec-b">${gauge(z.ppc, 92)}<dl><div><dt>Aderência</dt><dd>${pct(z.ader)}</dd></div><div><dt>Programadas</dt><dd>${z.n}${z.apur ? `<small class="muted"> +${z.apur} a apurar</small>` : ''}</dd></div><div><dt>Concluídas</dt><dd class="t-ok">${z.c}</dd></div><div><dt>Não exec.</dt><dd class="t-bad">${z.x == null ? '·' : z.x}</dd></div></dl></div>${none}</article>`;
     }).join('');
     const keys = ['Todas'].concat(empresas.filter((e) => S.emp === 'Todas' || S.emp === e));
     const chart = g === 'dia' || g === 'ano' ? barsChart(ser.map((p) => ({ label: p.label, sub: p.sub, on: p.on, v: p.v }))) : lineChart(ser, keys);
@@ -1839,24 +1869,26 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
       return `<section class="rel-at">${head}${grupo('Não realizadas', 'bad', nx)}${grupo('Feitas parcialmente', 'warn', np)}</section>`;
     }).join('');
   }
-  function tabRelatorio() {
-    if (!S.ws) return emptyState();
+  function tabRelatorio(ro) {
+    if (!S.ws) return ro ? `<section class="card empty"><h2>Sem programação carregada</h2><p>Este projeto ainda não tem programações carregadas. Quando a equipe carregar os arquivos, os indicadores aparecem aqui.</p></section>` : emptyState();
     const rd = reportData(S.rel.per); const v = rd.a.view(rd.emp);
     const btns = `<div class="rep-actions"><button class="btn" id="pdf">Gerar PDF</button><button class="btn" id="xlsx">Gerar Excel</button><button class="btn ghost" id="wpp">Copiar resumo (WhatsApp)</button></div>`;
     const empRows = empresas.filter((e) => rd.emp === 'Todas' || rd.emp === e).map((e) => { const z = rd.a.por[e]; return `<tr><td>${empTag(e, 18)}</td><td class="r">${z.n}</td><td class="r t-ok">${z.c}</td><td class="r t-warn">${z.p}</td><td class="r t-bad">${z.x}</td><td>${bar(z.ppc)}<span class="bn t-${sem(z.ppc)}">${pct(z.ppc)}</span></td><td class="r">${pct(z.ader)}</td></tr>`; }).join('');
     const ins = insightsFor(v, rd.a.por).map((i) => `<li class="ins-${i.t}">${esc(i.x)}</li>`).join('');
-    return `${pageHead('Relatório', 'Monte o relatório para enviar ou apresentar: PDF com os principais indicadores e Excel com todas as tabelas.', '')}
+    return `${ro ? pageHead('Painel do gestor', 'Somente visualização: indicadores, destaques e pontos de atenção do projeto. Nada pode ser editado aqui.', '') : pageHead('Relatório', 'Monte o relatório para enviar ou apresentar: PDF com os principais indicadores e Excel com todas as tabelas.', '')}
       <div class="ctl"><div class="ctl-l">${seg([['dia', 'Diário'], ['semana', 'Semanal'], ['mes', 'Mensal'], ['ano', 'Anual'], ['tudo', 'Acumulado']], S.rel.per, 'data-relp')}${periodSelect(S.rel.per)}</div>${empPills()}</div>
-      ${btns}
+      ${ro ? `<div class="rep-actions"><button class="btn" id="pdf">Baixar PDF</button><button class="btn ghost" id="xlsx">Baixar Excel</button></div>` : btns}
       <article class="paper"><header class="paper-h"><span class="lg lg-vale" style="--h:30px"><img src="${LOGOS.vale || ''}" alt="PPC Contratadas CPF"></span><div><span class="eyebrow">Relatório de PPC · Projeto CPF · SLB III</span><h3>${esc(rd.info.titulo)}${rd.emp !== 'Todas' ? ' · ' + esc(rd.emp) : ''}</h3></div></header>
-      <div class="paper-k"><div><b class="t-${sem(v.ppc)}">${pct(v.ppc)}</b><span>PPC ${rd.prev ? deltaTxt(v.ppc, rd.prev.view(rd.emp).ppc, rd.prevInfo.curto) : ''}</span></div><div><b>${pct(v.ader)}</b><span>Aderência</span></div><div><b>${v.n}</b><span>Programadas</span></div><div><b>${v.c}</b><span>Concluídas</span></div><div><b class="t-warn">${v.p}</b><span>Parciais</span></div><div><b class="t-bad">${v.x}</b><span>Não executadas</span></div></div>
+      <div class="paper-k"><div><b class="t-${sem(v.ppc)}">${pct(v.ppc)}</b><span>PPC ${rd.prev ? deltaTxt(v.ppc, rd.prev.view(rd.emp).ppc, rd.prevInfo.curto) : ''}</span></div><div><b>${pct(v.ader)}</b><span>Aderência</span></div><div><b>${v.n}</b><span>Programadas${v.apur ? ` <em class="apur">+${v.apur} a apurar</em>` : ''}</span></div><div><b>${v.c}</b><span>Concluídas</span></div><div><b class="t-warn">${v.p}</b><span>Parciais</span></div><div><b class="t-bad">${v.x}</b><span>Não executadas</span></div></div>
       ${ins ? `<h4>Destaques do período</h4><ul class="rel-ins">${ins}</ul>` : ''}
       <h4>Por empresa</h4><div class="tw"><table>${gHead('Empresa')}<tbody>${empRows}</tbody></table></div>
       <h4>Evolução</h4>${rd.per === 'ano' || rd.per === 'mes' ? lineChart(rd.hist, ['Todas'].concat(empresas)) : lineChart(rd.hist, ['Todas'].concat(empresas))}
       <h4>Principais causas</h4>${paretoSvg(rd.pareto.causa.slice(0, 6), { label: 190 })}
-      <h4>Pontos de atenção por empresa</h4><p class="muted sm">O que não foi realizado e o que ficou parcial, com causa, responsável e justificativa. Edite causas e justificativas na aba Resumo.</p>${relAtencaoHtml(rd)}
+      <h4>Pontos de atenção por empresa</h4><p class="muted sm">O que não foi realizado e o que ficou parcial, com causa, responsável e justificativa. ${ro ? '' : 'Edite causas e justificativas na aba Resumo.'}</p>${relAtencaoHtml(rd)}
       <p class="muted sm">O PDF traz ainda: dia a dia, hierarquia por fiscal/encarregado/liderança, pareto de responsabilidade e critérios. O Excel traz todas as tabelas do período.</p></article>`;
   }
+
+  function tabPainel() { return tabRelatorio(true); }
 
   /* ---------- Fontes ---------- */
   function tabFontes() {
@@ -1911,7 +1943,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   const GERAL_PWH = '309a00a63a14b1ce4b0b6291a7eaead6d03e9f6d8975fbcf26bb95cc46abb791';
   const pwOf = (id) => (id === 'geral' ? (S.geralRec.pwh || GERAL_PWH) : ((S.projetos.find((p) => p.id === id) || {}).pwh || ''));
   S.unlocked = {};
-  const ASKTXT = { open: 'Abrir', edit: 'Editar', del: 'Excluir' };
+  const ASKTXT = { open: 'Abrir', edit: 'Editar', del: 'Excluir', view: 'Visualizar' };
   function askHtml() {
     const a = S.pj.ask; if (!a) return '';
     const nm = a.id === 'geral' ? S.geralRec.nome : ((S.projetos.find((p) => p.id === a.id) || {}).nome || 'projeto');
@@ -1931,6 +1963,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     } else if (pwHash(a.id, v) !== pwOf(a.id)) { const i = $('#pw-in'); if (i) { i.value = ''; i.focus(); } return toast('Senha incorreta'); }
     S.unlocked[a.id] = true; S.pj.ask = null;
     if (a.act === 'open') return openProj(a.id);
+    if (a.act === 'view') return openProj(a.id, true);
     if (a.act === 'edit') { S.pj.form = a.id === 'geral' ? Object.assign({}, S.geralRec, { id: 'geral' }) : Object.assign({}, S.projetos.find((p) => p.id === a.id)); render(); window.scrollTo(0, 0); return; }
     if (a.act === 'del') { S.pj.del = a.id; return render(); }
   }
@@ -1956,15 +1989,16 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     if (S.proj === 'geral') { S.geralSnap = snap; store.set('geralSnap', snap); return; }
     const p = projRec(); if (p) { p.snap = snap; store.set('projetos', S.projetos); }
   }
-  async function openProj(id) {
+  async function openProj(id, vw) {
+    S.vw = !!vw; S.rel.per = S.rel.per || 'semana';
     S.proj = id; S.files = []; S.blocks = []; S.overrides = {}; S.apEd = {}; S.ws = null; S.mes = S.ano = S.dia = null; S.emp = 'Todas'; S.seq = 0; S.closed = {};
     S.cons = wget('cons', {}); S.causa = wget('causa', {}); S.resp = wget('resp', {}); S.supMap = wget('supMap', {}); S.just = wget('just', {});
     S.f = { q: '', status: '', fiscal: '', emp: '', di: '' }; S.busy = ''; recompute();
     const saved = await idb.list(id + '|');
     if (saved.length) { saved.sort((p, q) => p.mtime - q.mtime); await readFiles(saved.map((r) => ({ name: r.name, size: r.size, lastModified: r.mtime, arrayBuffer: async () => r.buf })), { restore: true }); }
-    go(S.merged.acts.length ? 'resumo' : 'carregar');
+    go(S.vw ? 'painel' : S.merged.acts.length ? 'resumo' : 'carregar');
   }
-  function goHub() { saveSnap(); S.proj = null; S.unlocked = {}; S.pj.ask = null; try { history.replaceState(null, '', '#projetos'); } catch (e) { /* */ } render(); window.scrollTo(0, 0); }
+  function goHub() { saveSnap(); S.vw = false; S.proj = null; S.unlocked = {}; S.pj.ask = null; try { history.replaceState(null, '', '#projetos'); } catch (e) { /* */ } render(); window.scrollTo(0, 0); }
   function pjForm() {
     const f = S.pj.form; if (!f) return '';
     const areas = [...new Set(S.projetos.map((p) => p.area))];
@@ -1981,7 +2015,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     const sn = p.snap; const open = `data-pjgo="${esc(p.id)}"`;
     const info = sn && sn.n ? `Semana ${wk(sn.ws)} · <b>${sn.c} de ${sn.n}</b> concluídas · ${sn.files} arquivo${sn.files === 1 ? '' : 's'}` : (sn ? `${sn.files} arquivo(s) carregado(s)` : 'Nenhuma programação carregada ainda');
     const del = S.pj.del === p.id ? `<button class="btn danger sm-b" data-pjdel="${esc(p.id)}">Confirmar exclusão</button><button class="lnk" data-pjcancel="1">cancelar</button>` : `<button class="lnk" data-pjedit="${esc(p.id)}">Editar</button><button class="lnk" data-pjdel="${esc(p.id)}">Excluir</button>`;
-    return `<article class="card pjcard"><div class="pjtop"><div class="pjg">${gauge(sn && sn.n ? sn.ppc : null, 72)}</div><div class="pjm"><span class="chip chip-info">${esc(p.area)}</span><span class="chip chip-mute">${p.pwh ? '🔒 com senha' : '🔓 sem senha'}</span><h3>${esc(p.nome)}</h3><span class="muted">Responsável: <b>${esc(p.resp)}</b></span>${p.desc ? `<span class="muted sm">${esc(p.desc)}</span>` : ''}</div></div><p class="pjinfo">${info}</p><div class="pjfoot"><button class="btn" ${open}>Abrir projeto →</button><span class="pjact">${del}</span></div></article>`;
+    return `<article class="card pjcard"><div class="pjtop"><div class="pjg">${gauge(sn && sn.n ? sn.ppc : null, 72)}</div><div class="pjm"><span class="chip chip-info">${esc(p.area)}</span><span class="chip chip-mute">${p.pwh ? '🔒 com senha' : '🔓 sem senha'}</span><h3>${esc(p.nome)}</h3><span class="muted">Responsável: <b>${esc(p.resp)}</b></span>${p.desc ? `<span class="muted sm">${esc(p.desc)}</span>` : ''}</div></div><p class="pjinfo">${info}</p><div class="pjfoot"><span class="pjbtns"><button class="btn" ${open}>Abrir projeto →</button><button class="btn ghost" data-pjview="${esc(p.id)}" title="Painel somente leitura para gestores">👁 Visualizar</button></span><span class="pjact">${del}</span></div></article>`;
   }
   function tabHub() {
     const ps = S.projetos; const withS = ps.filter((p) => p.snap && p.snap.n);
@@ -1993,7 +2027,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     const pills = areas.length > 1 ? `<div class="pills"><button class="pill ${S.pj.area ? '' : 'on'}" data-pjarea="*">Todas as áreas</button>${areas.map((x) => `<button class="pill ${S.pj.area === x ? 'on' : ''}" data-pjarea="${esc(x)}">${esc(x)}</button>`).join('')}</div>` : '';
     const gr = S.geralRec;
     const gdel = S.pj.del === 'geral' ? `<button class="btn danger sm-b" data-pjdel="geral">Confirmar exclusão</button><button class="lnk" data-pjcancel="1">cancelar</button>` : `<button class="lnk" data-pjedit="geral">Editar</button><button class="lnk" data-pjdel="geral">Excluir</button>`;
-    const geral = `<article class="card pjcard pjgeral"><div class="pjtop"><div class="pjg">${gauge(gs && gs.n ? gs.ppc : null, 72)}</div><div class="pjm"><span class="chip chip-info">${esc(gr.area)}</span><span class="chip chip-mute">🔒 com senha</span><h3>${esc(gr.nome)}</h3><span class="muted pjl">${['ÁPIA', 'LUK', 'MILPLAN'].map((e) => logo(e, 18)).join('')}</span>${gr.resp ? `<span class="muted">Responsável: <b>${esc(gr.resp)}</b></span>` : ''}${gr.desc ? `<span class="muted sm">${esc(gr.desc)}</span>` : ''}</div></div><p class="pjinfo">${gs && gs.n ? `Semana ${wk(gs.ws)} · <b>${gs.c} de ${gs.n}</b> concluídas · ${gs.files} arquivo${gs.files === 1 ? '' : 's'}` : 'Nenhuma programação carregada ainda'}</p><div class="pjfoot"><button class="btn" data-pjgo="geral">Abrir visão geral →</button><span class="pjact">${gdel}</span></div></article>`;
+    const geral = `<article class="card pjcard pjgeral"><div class="pjtop"><div class="pjg">${gauge(gs && gs.n ? gs.ppc : null, 72)}</div><div class="pjm"><span class="chip chip-info">${esc(gr.area)}</span><span class="chip chip-mute">🔒 com senha</span><h3>${esc(gr.nome)}</h3><span class="muted pjl">${['ÁPIA', 'LUK', 'MILPLAN'].map((e) => logo(e, 18)).join('')}</span>${gr.resp ? `<span class="muted">Responsável: <b>${esc(gr.resp)}</b></span>` : ''}${gr.desc ? `<span class="muted sm">${esc(gr.desc)}</span>` : ''}</div></div><p class="pjinfo">${gs && gs.n ? `Semana ${wk(gs.ws)} · <b>${gs.c} de ${gs.n}</b> concluídas · ${gs.files} arquivo${gs.files === 1 ? '' : 's'}` : 'Nenhuma programação carregada ainda'}</p><div class="pjfoot"><span class="pjbtns"><button class="btn" data-pjgo="geral">Abrir visão geral →</button><button class="btn ghost" data-pjview="geral" title="Painel somente leitura para gestores">👁 Visualizar</button></span><span class="pjact">${gdel}</span></div></article>`;
     const list = ps.filter((p) => !S.pj.area || p.area === S.pj.area);
     const grupos = (S.pj.area ? [S.pj.area] : areas).map((ar) => { const it = list.filter((p) => p.area === ar); return it.length ? `<section class="pjarea"><div class="sec-h"><h3>${esc(ar)}</h3><span class="muted">${it.length} projeto${it.length === 1 ? '' : 's'}</span></div><div class="pjcards">${it.map(pjCard).join('')}</div></section>` : ''; }).join('');
     const vazio = ps.length ? '' : `<section class="card empty"><h3>Cadastre seu primeiro projeto</h3><p>Informe nome, área e responsável. Ao abrir o projeto você entra na página principal dele, carrega as programações em Excel e vê PPC, atividades, Pareto e relatórios só daquele projeto.</p><div class="actions"><button class="btn" data-pjnew="1">+ Novo projeto</button></div></section>`;
@@ -2002,7 +2036,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   function renderProjbar() {
     const el = $('#projbar'); const p = projInfo(); if (!el) return;
     el.hidden = !p; if (!p) { el.innerHTML = ''; return; }
-    el.innerHTML = `<div class="projbar-in"><button class="btn ghost sm-b" data-pjhub="1">← Projetos</button><div class="pbm"><b>${esc(p.nome)}</b><span>${esc(p.area)}${p.resp ? ' · Responsável: ' + esc(p.resp) : ''}</span></div><span class="pbf">${S.files.length ? S.files.length + ' arquivo' + (S.files.length === 1 ? '' : 's') + ' carregado' + (S.files.length === 1 ? '' : 's') : 'sem arquivos'}</span></div>`;
+    el.innerHTML = `<div class="projbar-in"><button class="btn ghost sm-b" data-pjhub="1">← Projetos</button><div class="pbm"><b>${esc(p.nome)}${S.vw ? ' <span class="chip chip-info vw-chip">👁 Somente visualização</span>' : ''}</b><span>${esc(p.area)}${p.resp ? ' · Responsável: ' + esc(p.resp) : ''}</span></div><span class="pbf">${S.files.length ? S.files.length + ' arquivo' + (S.files.length === 1 ? '' : 's') + ' carregado' + (S.files.length === 1 ? '' : 's') : 'sem arquivos'}</span></div>`;
   }
   function pjSave() {
     const g = (id) => ($('#' + id) ? $('#' + id).value.trim() : '');
@@ -2017,13 +2051,13 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     const i = S.projetos.findIndex((p) => p.id === rec.id); if (i >= 0) S.projetos[i] = rec; else S.projetos.push(rec);
     store.set('projetos', S.projetos); S.pj.form = null; toast('Projeto salvo'); render();
   }
-  const VIEWS = { carregar: tabCarregar, resumo: tabResumo, atividades: tabAtividades, equipes: tabEquipes, pareto: tabPareto, relatorio: tabRelatorio, fontes: tabFontes };
+  const VIEWS = { painel: tabPainel, carregar: tabCarregar, resumo: tabResumo, atividades: tabAtividades, equipes: tabEquipes, pareto: tabPareto, relatorio: tabRelatorio, fontes: tabFontes };
   function renderTabs() { $('#tabs').innerHTML = TABS.map(([k, l, ic]) => `<button role="tab" class="tab ${S.tab === k ? 'on' : ''}" aria-selected="${S.tab === k}" data-tab="${k}"><i class="ti" aria-hidden="true">${ic}</i>${l}</button>`).join(''); }
   function renderBusy() { const b = $('.busy'); if (b) b.textContent = S.busy + '…'; else render(); }
   let keepFocus = null;
   function render() {
     const hub = !S.proj; const el = $('#view');
-    $('#tabsbar').hidden = hub; renderProjbar(); if (!hub) renderTabs();
+    $('#tabsbar').hidden = hub || !!S.vw; renderProjbar(); if (!hub && !S.vw) renderTabs();
     el.innerHTML = hub ? tabHub() : VIEWS[S.tab]();
     if (hub || !S.ws) $('#meta').innerHTML = hub ? 'Seus projetos' : 'Aguardando programação';
     else { const sm = W(S.ws).sm; $('#meta').innerHTML = `Semana ${esc(wLabel(S.ws))}${sm.n ? ` <span class="mchip mchip-${sem(sm.ppc)}">PPC ${pct(sm.ppc)} · meta ${Math.round(S.meta * 100)}%</span>` : ''}`; }
@@ -2037,7 +2071,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
       tr.classList.toggle('hid', hide);
     });
   }
-  function go(tab) { if (!S.proj) return goHub(); S.tab = tab; try { history.replaceState(null, '', '#' + tab); } catch (e) { location.hash = tab; } render(); window.scrollTo(0, 0); }
+  function go(tab) { if (!S.proj) return goHub(); if (S.vw) tab = 'painel'; else if (tab === 'painel') tab = 'resumo'; S.tab = tab; try { history.replaceState(null, '', '#' + tab); } catch (e) { location.hash = tab; } render(); window.scrollTo(0, 0); }
 
   /* ---------- saída de arquivos ---------- */
   async function saveFile(filename, data, mime) {
@@ -2064,7 +2098,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
   /* ---------- eventos ---------- */
   document.addEventListener('click', (ev) => {
-    const t = ev.target.closest('[data-tab],[data-go],[data-emp],[data-wk],[data-rm],[data-gran],[data-dia],[data-fclear],[data-fcsv],[data-eqv],[data-eqp],[data-pap],[data-relp],[data-tg],[data-logo-reset],[data-jump],[data-pjgo],[data-pjrestore],[data-pwok],[data-pwcancel],[data-pjhub],[data-pjarea],[data-pjnew],[data-pjedit],[data-pjdel],[data-pjsave],[data-pjcancel],#totop,#pdf,#xlsx,#wpp,#clr,#theme');
+    const t = ev.target.closest('[data-tab],[data-go],[data-emp],[data-wk],[data-rm],[data-gran],[data-dia],[data-fclear],[data-fcsv],[data-eqv],[data-eqp],[data-pap],[data-relp],[data-tg],[data-logo-reset],[data-jump],[data-pjgo],[data-pjview],[data-pjrestore],[data-pwok],[data-pwcancel],[data-pjhub],[data-pjarea],[data-pjnew],[data-pjedit],[data-pjdel],[data-pjsave],[data-pjcancel],#totop,#pdf,#xlsx,#wpp,#clr,#theme');
     if (!t) return;
     const d = t.dataset;
     if (d.tab) return go(d.tab);
@@ -2096,6 +2130,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     if (t.id === 'totop') { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
     if (d.pjnew) { S.pj.form = {}; render(); const i = $('#pj-nome'); if (i) i.focus(); return; }
     if (d.pjedit) return pwAsk(d.pjedit, 'edit');
+    if (d.pjview) return pwAsk(d.pjview, 'view');
     if (d.pjrestore) { S.geralRec = Object.assign({}, GERAL_DEF); saveGeral(); toast('Visão geral restaurada'); return render(); }
     if (d.pjdel) { if (S.pj.del === d.pjdel && d.pjdel === 'geral') { idb.delPrefix('geral|'); ['cons', 'causa', 'resp', 'supMap', 'just', 'geralSnap'].forEach((k) => store.set(k, k === 'geralSnap' ? null : {})); S.geralSnap = null; S.geralRec.removed = true; saveGeral(); S.pj.del = null; toast('Visão geral excluída'); return render(); }
       if (S.pj.del === d.pjdel) { S.projetos = S.projetos.filter((p) => p.id !== d.pjdel); store.set('projetos', S.projetos); idb.delPrefix(d.pjdel + '|'); S.pj.del = null; toast('Projeto excluído'); return render(); } return pwAsk(d.pjdel, 'del'); }
@@ -2130,7 +2165,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   document.addEventListener('input', (ev) => { if (ev.target.id === 'q') { S.f.q = ev.target.value; keepFocus = '#q'; render(); } });
   ['dragenter', 'dragover'].forEach((n) => document.addEventListener(n, (e) => { if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) { e.preventDefault(); $('#view').classList.add('dragging'); } }));
   ['dragleave', 'drop'].forEach((n) => document.addEventListener(n, (e) => { if (n === 'drop') { e.preventDefault(); if (S.proj && e.dataTransfer && e.dataTransfer.files.length) readFiles(e.dataTransfer.files); } $('#view').classList.remove('dragging'); }));
-  window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (S.proj && VIEWS[h] && h !== S.tab) { S.tab = h; render(); } });
+  window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (S.proj && VIEWS[h] && h !== S.tab && !S.vw && h !== 'painel') { S.tab = h; render(); } });
 
   /* ---------- início ---------- */
   const th = store.get('theme', null); if (th) document.documentElement.dataset.theme = th;
@@ -2181,10 +2216,10 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     const spread = (its, gap) => { its.sort((p, q) => p.y - q.y); for (let i = 1; i < its.length; i++) if (its[i].y < its[i - 1].y + gap) its[i].y = its[i - 1].y + gap; return its; };
     hist.forEach((p, i) => {
       if (i === n - 1) return; if (many && i % 2 === 1) return;
-      spread(ord.filter((k) => p.v[k] != null).map((k) => ({ k, y: y(p.v[k]) - 9, v: p.v[k] })), 11).forEach((it) => txt(g, Math.round(it.v * 100) + '', x(i), it.y, many ? 9.5 : 10.5, EMPCOL[it.k] || CV.dark, 'bold', 'center'));
+      const seenV = new Set(); spread(ord.slice().reverse().filter((k) => p.v[k] != null && !seenV.has(Math.round(p.v[k] * 100)) && seenV.add(Math.round(p.v[k] * 100))).map((k) => ({ k, y: y(p.v[k]) - 9, v: p.v[k] })), 13).forEach((it) => txt(g, Math.round(it.v * 100) + '', x(i), it.y, many ? 9.5 : 10.5, EMPCOL[it.k] || CV.dark, 'bold', 'center'));
     });
     const last = hist[n - 1];
-    if (last) spread(ord.filter((k) => last.v[k] != null).map((k) => ({ k, y: y(last.v[k]) + 4, v: last.v[k] })), 13).forEach((it) => txt(g, (it.k === 'Todas' ? 'Consolidado' : it.k) + ' ' + Math.round(it.v * 100) + '%', x(n - 1) + 9, it.y, 11, EMPCOL[it.k] || CV.dark, 'bold'));
+    if (last) spread(ord.filter((k) => last.v[k] != null).map((k) => ({ k, y: y(last.v[k]) + 4, v: last.v[k] })), 15).forEach((it) => txt(g, (it.k === 'Todas' ? 'Consolidado' : it.k) + ' ' + Math.round(it.v * 100) + '%', x(n - 1) + 9, it.y, 11, EMPCOL[it.k] || CV.dark, 'bold'));
     let lx = L; keys.forEach((k) => { const col = EMPCOL[k] || CV.dark; g.fillStyle = col; rrect(g, lx, 12, 12, 12, 3); g.fill(); const lab = k === 'Todas' ? 'Consolidado' : k; txt(g, lab, lx + 17, 22, 11.5, CV.ink); lx += 28 + g.measureText(lab).width; });
     g.fillStyle = CV.band; g.strokeStyle = CV.ok; g.lineWidth = 1; rrect(g, lx, 12, 12, 12, 3); g.fill(); g.stroke(); txt(g, 'zona da meta', lx + 17, 22, 11.5, CV.ink);
     return { url: c.toDataURL('image/png'), w: W, h: H };
@@ -2214,19 +2249,19 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     let items = items0.filter((i) => !i.neutro); const tot = items.reduce((s, i) => s + i.v, 0); if (!tot) return null;
     if (items.length > 8) { const rest = items.slice(7); items = items.slice(0, 7).concat([{ k: 'Outros (' + rest.length + ')', v: rest.reduce((s, i) => s + i.v, 0) }]); }
     const n = items.length, rowH = 20, CH = 250, H = CH + n * rowH + 14; const { c, g } = mkCanvas(W, H); const L = 38, R = 42, T = 30, B = 40, gw = (W - L - R) / n, bw = Math.min(60, gw * 0.62);
-    const mx = Math.max(...items.map((i) => i.v)); const top = Math.max(4, Math.ceil((mx * 1.15) / 2) * 2);
+    const mx = Math.max(...items.map((i) => i.v)); const top = Math.max(4, Math.ceil((mx * 1.15) / 4) * 4);
     const yb = (v) => T + (1 - v / top) * (CH - T - B), yp = (f) => T + (1 - f) * (CH - T - B);
     [0, 0.25, 0.5, 0.75, 1].forEach((t) => { g.strokeStyle = CV.line; g.lineWidth = 1; g.beginPath(); g.moveTo(L, yp(t)); g.lineTo(W - R, yp(t)); g.stroke(); txt(g, String(Math.round(t * top)), L - 7, yp(t) + 4, 10.5, CV.mute, 'normal', 'right'); txt(g, t * 100 + '%', W - R + 7, yp(t) + 4, 10.5, CV.mute); });
     g.strokeStyle = CV.yellow; g.lineWidth = 1.3; g.setLineDash([5, 4]); g.beginPath(); g.moveTo(L, yp(0.8)); g.lineTo(W - R, yp(0.8)); g.stroke(); g.setLineDash([]);
     let acc = 0; const pts = [];
     items.forEach((it, i) => {
       const before = acc; acc += it.v; const cx = L + i * gw + gw / 2; g.fillStyle = before / tot < 0.8 ? CV.teal : '#a9c3c2'; rrect(g, cx - bw / 2, yb(it.v), bw, CH - B - yb(it.v), 5); g.fill();
-      txt(g, String(it.v), cx, yb(it.v) - 6, 12, CV.ink, 'bold', 'center');
+      const bh = CH - B - yb(it.v); if (bh > 24) txt(g, String(it.v), cx, CH - B - 9, 12.5, '#fff', 'bold', 'center'); else txt(g, String(it.v), cx, yb(it.v) - 6, 12, CV.ink, 'bold', 'center');
       g.beginPath(); g.arc(cx, CH - B + 17, 10, 0, 7); g.fillStyle = CV.soft; g.fill(); g.strokeStyle = '#c7d3d5'; g.lineWidth = 1; g.stroke(); txt(g, String(i + 1), cx, CH - B + 21, 11, CV.ink, 'bold', 'center');
       pts.push([cx, yp(acc / tot), Math.round((100 * acc) / tot)]);
     });
     g.strokeStyle = CV.yellow; g.lineWidth = 2.6; g.beginPath(); pts.forEach((p, i) => (i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]))); g.stroke();
-    pts.forEach((p) => { g.beginPath(); g.arc(p[0], p[1], 4, 0, 7); g.fillStyle = '#fff'; g.fill(); g.strokeStyle = CV.yellow; g.lineWidth = 2.2; g.stroke(); txt(g, p[2] + '%', p[0], p[1] - 9, 10.5, '#9a6f00', 'bold', 'center'); });
+    pts.forEach((p) => { g.beginPath(); g.arc(p[0], p[1], 4, 0, 7); g.fillStyle = '#fff'; g.fill(); g.strokeStyle = CV.yellow; g.lineWidth = 2.2; g.stroke(); g.font = `bold 10.5px ${FONT}`; const tw = g.measureText(p[2] + '%').width; g.fillStyle = 'rgba(255,255,255,.9)'; rrect(g, p[0] + 7, p[1] - 17, tw + 6, 14, 3); g.fill(); txt(g, p[2] + '%', p[0] + 10, p[1] - 6, 10.5, '#9a6f00', 'bold'); });
     items.forEach((it, i) => {
       const yy = CH + 4 + i * rowH; g.beginPath(); g.arc(L + 8, yy + 8, 8, 0, 7); g.fillStyle = CV.soft; g.fill(); txt(g, String(i + 1), L + 8, yy + 12, 10.5, CV.ink, 'bold', 'center');
       g.font = `normal 12px ${FONT}`; txt(g, fit(g, it.k, W - L - R - 110), L + 24, yy + 12.5, 12, CV.ink); txt(g, `${it.v} | ${Math.round((100 * it.v) / tot)}%`, W - R, yy + 12.5, 12, CV.mute, 'bold', 'right');
@@ -2256,7 +2291,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     const rd = ctx.reportData(per); const emps = ctx.empresas().filter((e) => rd.emp === 'Todas' || rd.emp === e);
     const v = rd.a.view(rd.emp);
     const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
-    const PW = 297, PH = 210, M = 14;
+    const PW = 297, PH = 210, M = 14; let y = 36;
     const logoImg = {}; const keys = { vale: 'vale', 'ÁPIA': 'apia', LUK: 'luk', MILPLAN: 'milplan' };
     for (const k of Object.keys(keys)) { const src = ctx.logoSrc(keys[k]); if (src) { const d = await dims(src); if (d) logoImg[k] = { src, d }; } }
     const put = (k, x, y, h, chip) => {
@@ -2268,28 +2303,32 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
       } catch (e) { return 0; }
       return w;
     };
+    const putFit = (k, x, y0, bw, bh, chip) => { const L = logoImg[k]; if (!L) return 0; const r = L.d.w / L.d.h; let w = bw, h = bw / r; if (h > bh) { h = bh; w = bh * r; } try { if (chip) { doc.setFillColor(...C.dark); doc.roundedRect(x - 1, y0 + (bh - h) / 2 - 0.8, w + 2, h + 1.6, 1.2, 1.2, 'F'); } doc.addImage(L.src, 'PNG', x, y0 + (bh - h) / 2, w, h); } catch (e) { return 0; } return w; };
     const header = (title, sub) => {
+      if (sub !== 'continuação') { curHdr[0] = title; }
       doc.setFillColor(...C.dark); doc.rect(0, 0, PW, 24, 'F'); doc.setFillColor(...C.yellow); doc.rect(0, 24, PW, 1.2, 'F');
-      const w = put('vale', M, 6, 12, true);
-      doc.setTextColor(...C.white); doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.text(safe(title), M + w + 6, 12.5);
-      doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(190, 220, 218); doc.text(safe(sub || ''), M + w + 6, 18.5);
+      const w = put('vale', M - 1, 3.5, 17, false);
+      doc.setTextColor(...C.white); doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.text(safe(title), M + w + 5, 12.5);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(190, 220, 218); doc.text(safe(sub || ''), M + w + 5, 18.5);
       doc.setFontSize(8.5); doc.text(safe(rd.info.titulo + (rd.emp !== 'Todas' ? ' | ' + rd.emp : '')), PW - M, 12.5, { align: 'right' });
     };
     const h2 = (t, y, x) => { x = x == null ? M : x; doc.setTextColor(...C.dark); doc.setFont('helvetica', 'bold'); doc.setFontSize(11.5); doc.text(safe(t), x, y); doc.setDrawColor(...C.yellow); doc.setLineWidth(0.8); doc.line(x, y + 1.6, x + 10, y + 1.6); doc.setLineWidth(0.2); };
     const note = (t, x, y, w) => { doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...C.mute); doc.text(doc.splitTextToSize(safe(t), w || PW - 2 * M), x, y); };
-    const tableDefaults = { styles: { font: 'helvetica', fontSize: 8.5, cellPadding: 1.9, textColor: C.ink, lineColor: C.line, lineWidth: 0.1 }, headStyles: { fillColor: C.dark, textColor: C.white, fontStyle: 'bold', halign: 'left' }, alternateRowStyles: { fillColor: C.bg }, margin: { left: M, right: M, bottom: 14 } };
+    const tableDefaults = { styles: { font: 'helvetica', fontSize: 8.5, cellPadding: 1.9, textColor: C.ink, lineColor: C.line, lineWidth: 0.1 }, headStyles: { fillColor: C.dark, textColor: C.white, fontStyle: 'bold', halign: 'left' }, alternateRowStyles: { fillColor: C.bg }, margin: { left: M, right: M, bottom: 16, top: 32 }, rowPageBreak: 'avoid', didDrawPage: (d) => { if (d.pageNumber > 1) header(curHdr[0], 'continuação'); } };
+    const curHdr = ['', ''];
+    const ensure = (need) => { if (y + need > PH - 16) { doc.addPage(); header(curHdr[0], 'continuação'); y = 36; } };
     const ppcCell = (val, n) => ({ content: n ? pct(val) : '-', styles: { halign: 'center', fontStyle: 'bold', textColor: n ? C.white : C.mute, fillColor: n ? semCol(ctx.sem(val)) : [238, 242, 243] } });
 
     /* ---- Página 1: capa e KPIs ---- */
     const PJ = ctx.proj && ctx.proj(); const PJt = PJ && PJ.resp;
     header(PJt ? 'Relatório de PPC - ' + PJ.nome : 'Relatório de PPC - Contratadas CPF', PJt ? 'Área: ' + PJ.area + ' | Responsável: ' + PJ.resp : 'Projeto CPF - SLB III | Planejamento e Controle');
-    let y = 36;
+    y = 36;
     const prevPpc = rd.prev ? rd.prev.view(rd.emp).ppc : null;
     const delta = v.ppc != null && prevPpc != null ? Math.round((v.ppc - prevPpc) * 100) : null;
     const kpis = [
       ['PPC', pct(v.ppc), `Meta ${Math.round(S.meta * 100)}%` + (delta == null ? '' : ` | ${delta >= 0 ? '+' : ''}${delta} p.p. vs ${rd.prevInfo.curto}`), semCol(ctx.sem(v.ppc))],
       ['Aderência', pct(v.ader), 'média do avanço previsto x realizado', C.teal],
-      ['Programadas', String(v.n), 'atividades apuradas', C.dark],
+      ['Programadas', String(v.n + (v.apur || 0)), v.apur ? `${v.n} apuradas | ${v.apur} a apurar` : 'atividades apuradas', C.dark],
       ['Concluídas', String(v.c), v.n ? Math.round((100 * v.c) / v.n) + '% das programadas' : '', C.ok],
       ['Não executadas', String(v.x == null ? 0 : v.x), 'sem avanço no período', C.bad],
     ];
@@ -2305,12 +2344,12 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     y += 40; h2('Desempenho por empresa', y); y += 5;
     const body = emps.map((e) => { const z = rd.a.por[e]; return [{ content: '', e }, z.n, z.c, z.p, z.x, ppcCell(z.ppc, z.n), pct(z.ader), z.ant || 0, ctx.apEff()[e] ? ctx.E.fmtBR(ctx.apEff()[e]) : 'a apurar']; });
     doc.autoTable(Object.assign({}, tableDefaults, {
-      startY: y, head: [['Empresa', 'Prog.', 'Conc.', 'Parc.', 'Não exec.', 'PPC', 'Aderência', 'Antecip.', 'Apurado até']], body,
-      columnStyles: { 0: { cellWidth: 44, minCellHeight: 11 }, 1: { halign: 'center' }, 2: { halign: 'center', textColor: C.ok, fontStyle: 'bold' }, 3: { halign: 'center' }, 4: { halign: 'center', textColor: C.bad, fontStyle: 'bold' }, 5: { cellWidth: 26 }, 6: { halign: 'center' }, 7: { halign: 'center' }, 8: { halign: 'center' } },
+      startY: y, head: [['Empresa', 'Prog.', 'Conc.', 'Parc.', 'Não exec.', 'PPC', 'Aderência', 'Antecip.', 'Apurado até']], body, bodyStyles: { valign: 'middle' },
+      columnStyles: { 0: { cellWidth: 48, minCellHeight: 11 }, 1: { halign: 'center' }, 2: { halign: 'center', textColor: C.ok, fontStyle: 'bold' }, 3: { halign: 'center' }, 4: { halign: 'center', textColor: C.bad, fontStyle: 'bold' }, 5: { cellWidth: 26 }, 6: { halign: 'center' }, 7: { halign: 'center' }, 8: { halign: 'center' } },
       didDrawCell: (d) => {
         if (d.section === 'body' && d.column.index === 0) {
-          const e = d.row.raw[0].e; const k = e; const w = put(k, d.cell.x + 2, d.cell.y + 2.2, 6.2, e === 'ÁPIA');
-          doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(...C.ink); doc.text(safe(e), d.cell.x + 2 + w + 3.5, d.cell.y + d.cell.height / 2 + 1.2);
+          const e = d.row.raw[0].e; putFit(e, d.cell.x + 2.5, d.cell.y + 2, 17, d.cell.height - 4, e === 'ÁPIA');
+          doc.setFont('helvetica', 'bold'); doc.setFontSize(9.5); doc.setTextColor(...C.ink); doc.text(safe(e), d.cell.x + 23, d.cell.y + d.cell.height / 2 + 1.3);
         }
       },
     }));
@@ -2326,11 +2365,11 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     /* ---- Página 2: evolução ---- */
     doc.addPage(); header('Evolução do PPC', rd.per === 'ano' ? 'Mês a mês' : rd.per === 'mes' ? 'Últimos meses' : 'Últimas semanas');
     y = 36; h2('PPC no tempo (meta ' + Math.round(S.meta * 100) + '%)', y);
-    const hist = rd.hist; const lim = lineCanvas(ctx, hist, ['Todas'].concat(rd.emp === 'Todas' ? emps : []), 1000, 300);
+    const hist = rd.hist; const lim = lineCanvas(ctx, hist, ['Todas'].concat(rd.emp === 'Todas' ? emps : []), 1000, 250);
     const iw = PW - 2 * M, ih = (lim.h / lim.w) * iw; doc.addImage(lim.url, 'PNG', M, y + 4, iw, ih, undefined, 'FAST');
     y = y + 4 + ih + 6;
-    if ((rd.per === 'semana' || rd.per === 'dia') && rd.diario) { const dl = diaCanvas(ctx, rd.diario, rd.emp === 'Todas' ? emps : [rd.emp], 1000, 270); const dh = (dl.h / dl.w) * iw; h2('Previsto x realizado por dia', y); doc.addImage(dl.url, 'PNG', M, y + 4, iw, dh, undefined, 'FAST'); y = y + 4 + dh + 6; }
-    h2((rd.per === 'semana' || rd.per === 'dia') ? 'Dia a dia da semana' : rd.per === 'ano' ? 'Mês a mês' : 'Por período', y); y += 4;
+    if ((rd.per === 'semana' || rd.per === 'dia') && rd.diario) { const dl = diaCanvas(ctx, rd.diario, rd.emp === 'Todas' ? emps : [rd.emp], 1000, 240); const dh = (dl.h / dl.w) * iw; ensure(dh + 10); h2('Previsto x realizado por dia', y); doc.addImage(dl.url, 'PNG', M, y + 4, iw, dh, undefined, 'FAST'); y = y + 4 + dh + 6; }
+    ensure(40); h2((rd.per === 'semana' || rd.per === 'dia') ? 'Dia a dia da semana' : rd.per === 'ano' ? 'Mês a mês' : 'Por período', y); y += 4;
     let rowsT;
     if ((rd.per === 'semana' || rd.per === 'dia') && rd.diario) rowsT = rd.diario.map((p) => [safe(p.label + ' ' + p.sub), ...emps.flatMap((e) => [String(p.st.por[e].n || '-'), ppcCell(p.st.por[e].ppc, p.st.por[e].n)]), String(p.st.tot.n || '-'), ppcCell(p.st.tot.ppc, p.st.tot.n)]);
     else rowsT = hist.filter((p) => p.st.tot.n).slice(-8).map((p) => [safe(p.label), ...emps.flatMap((e) => [String(p.st.por[e].n || '-'), ppcCell(p.st.por[e].ppc, p.st.por[e].n)]), String(p.st.tot.n || '-'), ppcCell(p.st.tot.ppc, p.st.tot.n)]);
@@ -2350,7 +2389,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     // empresa x causa
     const causasU = [...new Set(rd.pareto.rows.map((r) => ctx.causaOf(r) || 'Sem causa informada'))];
     if (causasU.length) {
-      h2('Empresa x causa (quantidade)', y); y += 4;
+      ensure(30); h2('Empresa x causa (quantidade)', y); y += 4;
       const cnt = (e, c) => rd.pareto.rows.filter((r) => r.empresa === e && (ctx.causaOf(r) || 'Sem causa informada') === c).length;
       doc.autoTable(Object.assign({}, tableDefaults, { startY: y, head: [['Empresa', ...causasU.map(safe), 'Total']], body: emps.map((e) => [e, ...causasU.map((c) => cnt(e, c) || '-'), rd.pareto.rows.filter((r) => r.empresa === e).length]), bodyStyles: { halign: 'center' }, columnStyles: { 0: { halign: 'left', fontStyle: 'bold' } }, styles: Object.assign({}, tableDefaults.styles, { fontSize: 7.5 }) }));
     }
@@ -2359,13 +2398,12 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     doc.addPage(); header('Equipes - fiscal, encarregado e liderança', 'PPC de quem entrega no campo');
     y = 36;
     [['Por fiscal', 'fiscal', 'Fiscal'], ['Por encarregado', 'enc', 'Encarregado'], ['Por liderança', 'lider', 'Liderança']].forEach(([title, key, label]) => {
-      const g = rd.groups[key]; if (y > PH - 55) { doc.addPage(); header('Equipes - fiscal, encarregado e liderança', 'continuação'); y = 36; }
+      const g = rd.groups[key]; ensure(30);
       h2(title, y);
       doc.autoTable(Object.assign({}, tableDefaults, {
         startY: y + 4, head: [[label, 'Empresa', 'Prog.', 'Conc.', 'Parc.', 'Não exec.', 'PPC', 'Aderência']],
         body: g.length ? g.map((x) => [safe(x.k === '—' ? 'Não informado' : x.k), [...x.emps].join(', '), x.n, x.c, x.p, x.x, ppcCell(x.ppc, x.n), pct(x.ader)]) : [[{ content: 'Sem atividades programadas apuradas', colSpan: 8 }]],
         columnStyles: { 0: { cellWidth: 70, fontStyle: 'bold' }, 2: { halign: 'center' }, 3: { halign: 'center' }, 4: { halign: 'center' }, 5: { halign: 'center' }, 6: { cellWidth: 24 }, 7: { halign: 'center' } },
-        didDrawPage: (d) => { if (d.pageNumber > 1 && d.cursor && false) header('', ''); },
       }));
       y = doc.lastAutoTable.finalY + 10;
     });
@@ -2381,17 +2419,17 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     /* ---- Pontos de atenção por empresa ---- */
     doc.addPage(); header('Pontos de atenção por empresa', 'Não realizadas, parciais e justificativa'); y = 34;
     ctx.attData(rd.info, rd.emp).forEach((z) => {
-      if (y > PH - 50) { doc.addPage(); header('Pontos de atenção por empresa', 'continuação'); y = 34; }
-      h2(`${z.e}  -  ${z.nx} nao realizada(s) | ${z.np} parcial(is) | ${z.c} de ${z.n} concluidas`, y); y += 4;
-      if (!z.rows.length) { note(z.n ? 'Sem pendencias: todas as atividades programadas foram concluidas.' : 'Nenhuma atividade programada apurada no periodo.', M, y + 4); y += 12; return; }
-      doc.autoTable(Object.assign({}, tableDefaults, { startY: y, margin: { left: M, right: M, top: 30 },
-        head: [['Situacao', 'Atividade', 'Prev.', 'Real.', 'Ader.', 'Causa / Resp.', 'Justificativa']],
+      ensure(32);
+      h2(`${z.e}  -  ${z.nx} não realizada(s) | ${z.np} parcial(is) | ${z.c} de ${z.n} concluídas`, y); y += 4;
+      if (!z.rows.length) { note(z.n ? 'Sem pendências: todas as atividades programadas foram concluídas.' : 'Nenhuma atividade programada apurada no período.', M, y + 4); y += 14; return; }
+      doc.autoTable(Object.assign({}, tableDefaults, { startY: y,
+        head: [['Situação', 'Atividade', 'Prev.', 'Real.', 'Ader.', 'Causa / Resp.', 'Justificativa']],
         body: z.rows.slice(0, 12).map((r) => [safe(r.status), safe((r.a.desc || '').slice(0, 80)) + (r.a.local ? '\n' + safe(String(r.a.local).slice(0, 50)) : ''), safe(String(Math.round((r.pAp || 0) * 100) / 100)), safe(String(Math.round((r.rAp || 0) * 100) / 100)), pct(r.ader), safe((ctx.causaOf(r) || '-') + (ctx.respOf(r) ? ' / ' + ctx.respOf(r) : '')), safe((ctx.justOf(r) || '-').slice(0, 140))]),
         columnStyles: { 0: { cellWidth: 20, fontStyle: 'bold' }, 1: { cellWidth: 62 }, 2: { cellWidth: 12, halign: 'center' }, 3: { cellWidth: 12, halign: 'center' }, 4: { cellWidth: 13, halign: 'center' }, 5: { cellWidth: 30 } }, styles: Object.assign({}, tableDefaults.styles, { fontSize: 7.4, cellPadding: 1.4 }),
         didParseCell: (d) => { if (d.section === 'body' && d.column.index === 0) d.cell.styles.textColor = /parcial/i.test(d.cell.text.join('')) ? [160, 110, 0] : [190, 50, 50]; } }));
-      y = doc.lastAutoTable.finalY + 3; if (z.rows.length > 12) { note('+ ' + (z.rows.length - 12) + ' atividades - lista completa no Excel (aba Pontos de atencao).', M, y + 3); y += 5; } y += 5;
+      y = doc.lastAutoTable.finalY + 3; if (z.rows.length > 12) { note('+ ' + (z.rows.length - 12) + ' atividades - lista completa no Excel (aba Pontos de atenção).', M, y + 3); y += 6; } y += 7;
     });
-    y = doc.lastAutoTable.finalY + 10; if (y > PH - 40) { doc.addPage(); header('Critérios', ''); y = 36; }
+    y += 4; ensure(30);
     h2('Critérios de apuração', y); y += 6;
     note(`PPC = atividades programadas concluídas (realizado >= previsto) / atividades programadas. Aderência = média de min(1, realizado/previsto). Semáforo: verde >= meta (${Math.round(S.meta * 100)}%), amarelo até 10 p.p. abaixo, vermelho abaixo. ` +
       `Regras ativas: ${[S.rules.exigirCampos && 'campos obrigatórios preenchidos', S.rules.statusNaoIniciado && 'A INICIAR/NÃO INICIADO fora do PPC', S.rules.antecipadas && 'antecipadas contadas', S.rules.cortarFuturo && 'realizado futuro ignorado', S.rules.respeitarN && 'Consid.=N respeitado'].filter(Boolean).join('; ') || 'nenhuma'}. ` +

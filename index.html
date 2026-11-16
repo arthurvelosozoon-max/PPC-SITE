@@ -255,6 +255,11 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 @media (max-width: 640px) { .projbar-in { padding: 8px 16px; } .pjcards { grid-template-columns: 1fr; } .jump { top: 45px; } }
 @media (max-width: 640px) { svg.chart { min-width: 620px; } .card:has(svg.chart), .paper:has(svg.chart) { overflow-x: auto; } .legend { position: sticky; left: 0; } }
 
+/* v7 · PDF */
+.file header .chip{display:inline-block;width:fit-content;margin:2px 0 0;align-self:flex-start}
+.pdfnote{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--soft);font-size:12.5px;color:var(--fg-2);margin:10px 0}
+.pdfnote b{color:var(--fg)}
+
 </style>
 <header class="top"><div class="top-in">
   <div class="brand"><span id="brand-logo"></span><div><h1>PPC · Contratadas CPF</h1><p>Projeto CPF · SLB III — Planejamento e Controle</p></div></div>
@@ -269,6 +274,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
 <script>
 /* PPC Contratadas — motor de leitura e cálculo (sem dependência de DOM).
  * Lê as planilhas de programação (Sprint Planning ÁPIA / LUK e PROG-SEM Milplan),
@@ -821,6 +828,260 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
 </script>
 <script>
+/* Leitor de programações em PDF: converte cada página em uma matriz de células (mesmo formato do Excel)
+   para passar pelo mesmo motor (E.parseSheet). Usa posição do texto (pdf.js), sem OCR. */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.PDFGrid = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+  const MS = 86400000;
+  const norm = (s) => String(s == null ? '' : s).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim().toUpperCase();
+  const compact = (s) => norm(s).replace(/[\s.]/g, '');
+  const MON = { JAN: 1, FEV: 2, MAR: 3, ABR: 4, MAI: 5, JUN: 6, JUL: 7, AGO: 8, SET: 9, OUT: 10, NOV: 11, DEZ: 12, FEB: 2, APR: 4, MAY: 5, AUG: 8, SEP: 9, OCT: 10, DEC: 12 };
+  const PROG = new Set(['PROG', 'P', 'PREV', 'PREVISTO']);
+  const REAL = new Set(['REAL', 'R', 'REALIZADO']);
+  const LABELS = new Set([...PROG, ...REAL, 'ADER', 'ADERENCIA']);
+  const WD = /^(seg|ter|qua|qui|sex|s[aá]b|dom)\.?$/i;
+  const NAMES = /^(ID|LS|FRENTE|LOCAL|SERVICO|DESCRICAO|ATIVIDADE|FIACAIS|FISCAIS|FISCAL|UN|STATUS|RAC|RACS)$|^(RESPONSAVEL|UNIDADE|OBSERVACOES|FISCAI)/;
+
+  function parseDM(s) {
+    const m = String(s).trim().match(/^(\d{1,2})\s*\/\s*(\d{1,2}|[a-zA-ZçÇ]{3,4})\.?(?:\s*\/\s*(\d{2,4}))?$/);
+    if (!m) return null;
+    const d = +m[1]; let mo;
+    if (/^\d+$/.test(m[2])) mo = +m[2]; else mo = MON[norm(m[2]).slice(0, 3)];
+    if (!mo || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+    let y = m[3] ? +m[3] : null; if (y != null && y < 100) y += 2000;
+    return { d, mo, y };
+  }
+  const serial = (y, mo, d) => Math.round(Date.UTC(y, mo - 1, d) / MS) + 25569;
+  const isoWeek = (y, mo, d) => {
+    const t = new Date(Date.UTC(y, mo - 1, d)); const dn = (t.getUTCDay() + 6) % 7; t.setUTCDate(t.getUTCDate() - dn + 3);
+    const f = new Date(Date.UTC(t.getUTCFullYear(), 0, 4)); return 1 + Math.round(((t - f) / MS - 3 + ((f.getUTCDay() + 6) % 7)) / 7);
+  };
+
+  async function pageItems(lib, page) {
+    const vp = page.getViewport({ scale: 1 });
+    const tc = await page.getTextContent();
+    const items = [];
+    for (const it of tc.items) {
+      const s = String(it.str || '').replace(/\s+/g, ' ').trim();
+      if (!s) continue;
+      const tr = lib.Util.transform(vp.transform, it.transform);
+      const d = Math.hypot(tr[0], tr[1]) || 1;
+      const xa = tr[4], xb = tr[4] + (tr[0] / d) * it.width;
+      items.push({ s, x0: Math.min(xa, xb), x1: Math.max(xa, xb), xc: (xa + xb) / 2, y: tr[5] });
+    }
+    return { items, W: vp.width, H: vp.height };
+  }
+
+  const median = (a) => { if (!a.length) return 0; const b = a.slice().sort((x, y) => x - y); return b[Math.floor(b.length / 2)]; };
+
+  /* converte os itens de uma página numa matriz; devolve null se a página não for uma programação */
+  function buildGrid(items, W, H, ctx) {
+    const prs = items.filter((i) => compact(i.s) === 'P/R').sort((a, b) => a.y - b.y);
+    if (!prs.length) return null;
+    const pr = prs[0], prX = pr.xc;
+    // linha de datas do cabeçalho
+    const dm = items.filter((i) => i.xc > prX && parseDM(i.s));
+    const byY = [];
+    dm.sort((a, b) => a.y - b.y).forEach((i) => { const g = byY.find((r) => Math.abs(r.y - i.y) <= 2); if (g) g.items.push(i); else byY.push({ y: i.y, items: [i] }); });
+    const dRow = byY.find((r) => r.items.length >= 3);
+    if (!dRow) return null;
+    const dateY = dRow.y;
+    const wd = items.filter((i) => WD.test(i.s) && i.xc > prX && i.y > dateY && i.y < dateY + 90 * (H / 842));
+    const wdY = wd.length ? median(wd.map((i) => i.y)) : null;
+    const hp = wdY ? Math.max(3, wdY - dateY) : 8 * (H / 842);
+    const headerBottom = (wdY || dateY) + 1.6 * hp;
+    // rótulos P/R/Prog./Real/Ader. na coluna P/R
+    const prHalf = Math.max(14, (pr.x1 - pr.x0) * 1.2);
+    const labelsAll = items.filter((i) => Math.abs(i.xc - prX) <= prHalf && LABELS.has(compact(i.s)) && i.y > headerBottom).sort((a, b) => a.y - b.y);
+    if (!labelsAll.some((l) => PROG.has(compact(l.s)))) return null;
+    const dataStart = labelsAll.find((l) => PROG.has(compact(l.s))).y - 2 * hp;
+
+    /* âncoras de coluna a partir do cabeçalho */
+    const thr = Math.max(3, W * 0.0045);
+    const anchors = [];
+    const addA = (a) => { const n = anchors.find((x) => Math.abs(x.xc - a.xc) < thr); if (n) { if (a.name && !n.name) { n.name = a.name; n.text = a.text; } if (a.iso && !n.iso) n.iso = a.iso; if (a.pr) n.pr = true; } else anchors.push(a); };
+    const hdr = items.filter((i) => i.y < headerBottom && i.y > dateY - 4 * hp && i.y < dataStart + 4 * hp);
+    // datas (ano vem do contexto)
+    const dates = dRow.items.sort((a, b) => a.xc - b.xc).map((i) => ({ i, dm: parseDM(i.s) }));
+    let year = null; const years = {};
+    items.forEach((i) => { const m = i.s.match(/\b\d{1,2}\/\d{1,2}\/(20\d\d)\b/); if (m) years[m[1]] = (years[m[1]] || 0) + 1; });
+    const explicit = Object.keys(years).sort((a, b) => years[b] - years[a])[0];
+    const wk = ((items.find((i) => /PROGRAMADAS\s*-\s*SEMANA\s+\d+/i.test(i.s)) || items.find((i) => /^SEMANA\s+\d+$/i.test(i.s)) || {}).s || '').replace(/\D+/g, '') || null;
+    const cand = [ctx.nameYear, ctx.mtimeYear, ctx.nowYear].filter(Boolean);
+    const fd = dates[0].dm;
+    if (dates[0].dm.y) year = dates[0].dm.y;
+    else if (explicit) year = +explicit;
+    else {
+      const tries = [...new Set(cand.concat(cand.map((y) => y - 1), cand.map((y) => y + 1)))];
+      year = tries.find((y) => wk && isoWeek(y, fd.mo, fd.d) === +wk) || cand[0] || new Date().getFullYear();
+    }
+    let prevMo = null, yy = year;
+    for (const o of dates) {
+      if (prevMo != null && o.dm.mo < prevMo - 6) yy++;
+      prevMo = o.dm.mo;
+      const y = o.dm.y || yy;
+      o.iso = serial(y, o.dm.mo, o.dm.d);
+      addA({ xc: o.i.xc, iso: o.iso });
+    }
+    addA({ xc: prX, pr: true, name: 'P/R', text: 'P/R' });
+    for (const i of hdr) {
+      const k = norm(i.s);
+      if (NAMES.test(k) && i.y <= headerBottom) { addA({ xc: i.xc, name: k, text: /^FIACAIS$|^FISCAI/.test(k) ? 'FISCAL' : i.s }); }
+      else if (i.y >= dateY - 1 && i.y <= (wdY || dateY) + 0.3 * hp && i.xc !== prX && !parseDM(i.s) && !WD.test(i.s)) addA({ xc: i.xc });
+    }
+    anchors.sort((a, b) => a.xc - b.xc);
+
+    /* itens de dados */
+    const data = items.filter((i) => i.y > headerBottom);
+    // cobertura horizontal para achar as fronteiras entre colunas
+    const cov = data.map((i) => [i.x0, i.x1]).sort((a, b) => a[0] - b[0]);
+    const merged = [];
+    for (const c of cov) { const l = merged[merged.length - 1]; if (l && c[0] <= l[1] + 0.5) l[1] = Math.max(l[1], c[1]); else merged.push([c[0], c[1]]); }
+    const bounds = [];
+    for (let k = 0; k < anchors.length - 1; k++) {
+      const a = anchors[k].xc, b = anchors[k + 1].xc;
+      let best = null, cur = a;
+      for (const m of merged) {
+        if (m[1] <= a) continue; if (m[0] >= b) break;
+        if (m[0] > cur && (!best || m[0] - cur > best[1] - best[0])) best = [cur, m[0]];
+        cur = Math.max(cur, m[1]);
+      }
+      if (cur < b && (!best || b - cur > best[1] - best[0])) best = [cur, b];
+      bounds.push(best && best[1] - best[0] > 0.8 ? (best[0] + best[1]) / 2 : (a + b) / 2);
+    }
+    const colOf = (x) => { let k = 0; while (k < bounds.length && x > bounds[k]) k++; return k; };
+    const prIdx = anchors.findIndex((a) => a.pr);
+    const dateIdx = new Set(anchors.map((a, k) => (a.iso ? k : -1)).filter((k) => k >= 0));
+    const nameIdx = (n) => anchors.findIndex((a) => a.name === n);
+    const idIdx = Math.max(0, nameIdx('ID'));
+    const isMil = anchors.some((a) => a.name === 'ATIVIDADE') && anchors.some((a) => a.name === 'LS');
+    const lsIdx = nameIdx('LS'), descIdx = anchors.findIndex((a) => a.name === 'DESCRICAO' || a.name === 'ATIVIDADE');
+
+    /* blocos Prog./Real/Ader. */
+    const blocks = [];
+    for (let k = 0; k < labelsAll.length; k++) {
+      const l = labelsAll[k], c = compact(l.s);
+      if (!PROG.has(c)) continue;
+      const b = { yP: l.y, yR: null, yA: null, label: l.s, labR: '', labA: '', cells: new Map(), P: new Map(), R: new Map() };
+      for (let j = k + 1; j < labelsAll.length; j++) {
+        const c2 = compact(labelsAll[j].s);
+        if (PROG.has(c2)) break;
+        if (REAL.has(c2) && b.yR == null) { b.yR = labelsAll[j].y; b.labR = labelsAll[j].s; }
+        else if ((c2 === 'ADER' || c2 === 'ADERENCIA') && b.yA == null) { b.yA = labelsAll[j].y; b.labA = labelsAll[j].s; }
+      }
+      blocks.push(b);
+    }
+    const pitches = blocks.filter((b) => b.yR != null).map((b) => b.yR - b.yP);
+    const defP = median(pitches) || 8 * (H / 842);
+    for (const b of blocks) {
+      b.pitch = b.yR != null ? b.yR - b.yP : defP;
+      b.yEnd = b.yA != null ? b.yA : (b.yR != null ? b.yR : b.yP + b.pitch);
+      b.cy = (b.yP + b.yEnd) / 2; b.half = (b.yEnd - b.yP) / 2 + 0.6 * b.pitch;
+    }
+    const labSet = new Set(labelsAll);
+    const free = [];
+    const put = (m, k, it) => { (m.get(k) || m.set(k, []).get(k)).push(it); };
+    for (const it of data) {
+      if (labSet.has(it)) continue;
+      const k = colOf(it.xc);
+      if (k === prIdx) continue;
+      let hit = null;
+      if (dateIdx.has(k)) {
+        for (const b of blocks) {
+          if (Math.abs(it.y - b.yP) <= 0.45 * b.pitch) { put(b.P, k, it); hit = b; break; }
+          if (b.yR != null && Math.abs(it.y - b.yR) <= 0.45 * b.pitch) { put(b.R, k, it); hit = b; break; }
+          if (it.y >= b.yP - 0.45 * b.pitch && it.y <= b.yEnd + 0.45 * b.pitch) { hit = b; break; }
+        }
+      } else {
+        let bd = Infinity;
+        for (const b of blocks) { const d = Math.abs(it.y - b.cy); if (d <= b.half && d < bd) { bd = d; hit = b; } }
+        if (hit) put(hit.cells, k, it);
+      }
+      if (!hit) free.push({ it, k });
+    }
+
+    /* monta as linhas */
+    const nC = anchors.length;
+    const blank = () => new Array(nC).fill(null);
+    const join = (arr) => arr.sort((a, b) => (Math.abs(a.y - b.y) > 2 ? a.y - b.y : a.x0 - b.x0)).map((x) => x.s).reduce((acc, t) => (acc ? acc + (/[^\s][-_/]$/.test(acc) ? '' : ' ') + t : t), '');
+    const events = [];
+    for (const b of blocks) events.push({ y: b.yP, kind: 'b', b });
+    const fl = free.filter((f) => /[A-Za-z0-9À-ÿ]/.test(f.it.s) && (f.k !== prIdx || !LABELS.has(compact(f.it.s)))).sort((a, b) => a.it.y - b.it.y);
+    const fRows = [];
+    const ftol = Math.max(2, 0.3 * defP);
+    for (const f of fl) { const g = fRows.find((r) => Math.abs(r.y - f.it.y) <= ftol); if (g) g.list.push(f); else fRows.push({ y: f.it.y, list: [f] }); }
+    for (const r of fRows) events.push({ y: r.y, kind: 'f', r });
+    events.sort((a, b) => a.y - b.y);
+
+    const rows = [];
+    const hrow = blank(); anchors.forEach((a, k) => { if (a.name) hrow[k] = a.text || a.name; }); hrow[prIdx] = 'P/R';
+    rows.push(hrow);
+    const drow = blank(); anchors.forEach((a, k) => { if (a.iso) drow[k] = a.iso; });
+    rows.push(drow);
+    for (const e of events) {
+      if (e.kind === 'f') {
+        const row = blank();
+        const cells = new Map();
+        e.r.list.forEach((f) => put(cells, f.k, f.it));
+        const only = e.r.list.filter((f) => !dateIdx.has(f.k));
+        if (isMil) {
+          const t = join(only.map((f) => f.it).slice());
+          if (only.length === 1 && /^LS-\d+/i.test(t)) { row[lsIdx] = t; }
+          else for (const [k, v] of cells) { if (!dateIdx.has(k)) row[k] = join(v); }
+        } else {
+          const t = join(only.map((f) => f.it).slice());
+          if (t) row[idIdx] = t;
+        }
+        rows.push(row);
+        continue;
+      }
+      const b = e.b;
+      const rp = blank(); for (const [k, v] of b.cells) rp[k] = join(v);
+      rp[prIdx] = b.label; for (const [k, v] of b.P) rp[k] = join(v);
+      rows.push(rp);
+      const rr = blank(); rr[prIdx] = b.labR || 'Real'; for (const [k, v] of b.R) rr[k] = join(v);
+      rows.push(rr);
+      if (b.yA != null) { const ra = blank(); ra[prIdx] = b.labA || 'Ader.'; rows.push(ra); }
+    }
+
+    /* rótulos soltos: projeto / contratada */
+    const below = (label) => {
+      const lab = items.filter((i) => norm(i.s) === label).sort((a, b) => a.y - b.y)[0];
+      if (!lab) return '';
+      const c = items.filter((i) => i.y > lab.y + 2 && i.y < lab.y + 70 * (H / 842) && Math.abs(i.xc - lab.xc) < Math.max(40, (lab.x1 - lab.x0) * 1.2)).sort((a, b) => a.y - b.y);
+      if (!c.length) return '';
+      const y0 = c[0].y; return c.filter((i) => Math.abs(i.y - y0) <= 3).sort((a, b) => a.x0 - b.x0).map((i) => i.s).join(' ');
+    };
+    const wkItem = items.filter((i) => /PROGRAMADAS\s*-\s*SEMANA\s+\d+/i.test(i.s)).sort((a, b) => a.x0 - b.x0)[0] || items.find((i) => /PROGRAMADAS\s*-\s*SEMANA\s+\d+/i.test(i.s)) || items.find((i) => /^SEMANA\s+\d+$/i.test(i.s));
+    const wkTxt = wkItem ? (wkItem.s.match(/SEMANA\s+\d+/i) || [''])[0] : '';
+    return { rows, projeto: below('PROJETO'), contratada: below('CONTRATADA:'), semana: wkTxt, nBlocks: blocks.length };
+  }
+
+  /* lib = pdfjsLib; data = ArrayBuffer/Uint8Array; info = { name, mtime } */
+  async function parse(lib, data, info) {
+    info = info || {};
+    const doc = await lib.getDocument({ data: new Uint8Array(data), disableFontFace: true, isEvalSupported: false }).promise;
+    const nameY = ((String(info.name || '').match(/(20\d\d)/) || [])[1]) | 0;
+    const ctx = { nameYear: nameY || null, mtimeYear: info.mtime ? new Date(info.mtime).getFullYear() : null, nowYear: new Date().getFullYear() };
+    const out = []; let totalText = 0;
+    for (let p = 1; p <= doc.numPages; p++) {
+      const page = await doc.getPage(p);
+      const { items, W, H } = await pageItems(lib, page);
+      totalText += items.length;
+      const g = items.length ? buildGrid(items, W, H, ctx) : null;
+      if (g && g.nBlocks) out.push(Object.assign({ name: 'PDF p.' + p + (g.semana ? ' · ' + g.semana.toUpperCase() : '') }, g));
+    }
+    if (doc.destroy) try { doc.destroy(); } catch (e) { /* ignore */ }
+    return { sheets: out, pages: doc.numPages, hasText: totalText > 0 };
+  }
+  return { parse, buildGrid, parseDM };
+});
+
+</script>
+<script>
 /* PPC Contratadas CPF — interface. Depende de PPCEngine, SheetJS (XLSX) e jsPDF. */
 (function () {
   'use strict';
@@ -874,32 +1135,44 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   const tick = () => new Promise((r) => setTimeout(r, 30));
   async function readFiles(list, opts) {
     opts = opts || {};
-    const files = Array.from(list || []).filter((f) => /\.xls[xmb]?$/i.test(f.name));
-    if (!files.length) { toast('Selecione arquivos Excel (.xlsx)'); return; }
+    const files = Array.from(list || []).filter((f) => /\.(xls[xmb]?|pdf)$/i.test(f.name));
+    if (!files.length) { toast('Selecione arquivos Excel (.xlsx) ou PDF'); return; }
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
       if (S.files.some((x) => x.name === f.name && x.size === f.size && x.mtime === f.lastModified)) continue;
       S.busy = `Lendo ${i + 1}/${files.length}: ${f.name}`; renderBusy(); await tick();
-      const rec = { id: ++S.seq, name: f.name, size: f.size, mtime: f.lastModified, sheets: [], erro: '' };
+      const isPdf = /\.pdf$/i.test(f.name);
+      const rec = { id: ++S.seq, name: f.name, size: f.size, mtime: f.lastModified, sheets: [], erro: '', tipo: isPdf ? 'pdf' : 'xlsx' };
+      const addSheet = (n, rows, extra) => {
+        const info = { file: f.name, sheet: n, mtime: f.lastModified };
+        let b = E.parseSheet(rows, info);
+        if (b && extra) { b.projeto = b.projeto || extra.projeto || ''; b.contratada = b.contratada || extra.contratada || ''; }
+        if (!b && !isPdf && /ENTRADA/i.test(n)) b = E.parseEntrada(rows, info);
+        if (!b) {
+          const cad = !isPdf && /CADASTR/i.test(n) ? E.parseCadastros(rows) : null;
+          if (cad) { rec.sheets.push({ name: n, status: 'cadastro', cad }); return; }
+          rec.sheets.push({ name: n, status: 'ignorada' }); return;
+        }
+        b.id = ++S.seq; b.mtime = f.lastModified; b.det = b.kind === 'entrada' ? null : E.detect(b); b.fileId = rec.id; if (isPdf) b.fonte = 'pdf';
+        S.blocks.push(b); rec.sheets.push({ name: n, status: 'ok', block: b });
+      };
       try {
         const buf = await f.arrayBuffer();
         if (!opts.restore && S.proj) idb.put(S.proj + '|' + f.name + '|' + f.size + '|' + f.lastModified, { name: f.name, size: f.size, mtime: f.lastModified, buf });
-        const wb = XLSX.read(buf, { type: 'array', cellDates: false });
-        const meta = (wb.Workbook && wb.Workbook.Sheets) || [];
-        wb.SheetNames.forEach((n, ix) => {
-          if (meta[ix] && meta[ix].Hidden) { rec.sheets.push({ name: n, status: 'oculta' }); return; }
-          const rows = XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: null, blankrows: true });
-          const info = { file: f.name, sheet: n, mtime: f.lastModified };
-          let b = E.parseSheet(rows, info);
-          if (!b && /ENTRADA/i.test(n)) b = E.parseEntrada(rows, info);
-          if (!b) {
-            const cad = /CADASTR/i.test(n) ? E.parseCadastros(rows) : null;
-            if (cad) { rec.sheets.push({ name: n, status: 'cadastro', cad }); return; }
-            rec.sheets.push({ name: n, status: 'ignorada' }); return;
-          }
-          b.id = ++S.seq; b.mtime = f.lastModified; b.det = b.kind === 'entrada' ? null : E.detect(b); b.fileId = rec.id;
-          S.blocks.push(b); rec.sheets.push({ name: n, status: 'ok', block: b });
-        });
+        if (isPdf) {
+          if (!window.pdfjsLib || !window.PDFGrid) throw new Error('o leitor de PDF não carregou — confira a internet e recarregue a página');
+          const r = await window.PDFGrid.parse(window.pdfjsLib, buf, { name: f.name, mtime: f.lastModified });
+          if (!r.hasText) throw new Error('este PDF é imagem (sem texto selecionável). Exporte o PDF direto do Excel ou envie o .xlsx');
+          if (!r.sheets.length) throw new Error('não encontrei a tabela de programação (colunas P/R, datas e atividades). Envie o PDF gerado a partir do modelo de programação');
+          r.sheets.forEach((sh) => addSheet(sh.name, sh.rows, sh));
+        } else {
+          const wb = XLSX.read(buf, { type: 'array', cellDates: false });
+          const meta = (wb.Workbook && wb.Workbook.Sheets) || [];
+          wb.SheetNames.forEach((n, ix) => {
+            if (meta[ix] && meta[ix].Hidden) { rec.sheets.push({ name: n, status: 'oculta' }); return; }
+            addSheet(n, XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: null, blankrows: true }));
+          });
+        }
       } catch (e) { rec.erro = String(e && e.message || e); }
       S.files.push(rec);
     }
@@ -1178,12 +1451,12 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     if (per === 'ano') return `<select id="asel" aria-label="Ano">${years.slice().reverse().map((a) => `<option ${a === S.ano ? 'selected' : ''}>${a}</option>`).join('')}</select>`;
     return '';
   }
-  const emptyState = () => `<section class="card empty"><h2>Nenhuma programação carregada</h2><p>Carregue os Excel de programação (Sprint Planning ÁPIA/LUK, PROG-SEM Milplan) e a planilha-mestra PPC_Vale_MultiEmpresa na aba <b>Carregar</b>. O site lê todas as planilhas visíveis e monta resumos diário, semanal, mensal e anual.</p><button class="btn" data-go="carregar">Ir para Carregar</button></section>`;
+  const emptyState = () => `<section class="card empty"><h2>Nenhuma programação carregada</h2><p>Carregue as programações em Excel ou PDF (Sprint Planning ÁPIA/LUK, PROG-SEM Milplan) e a planilha-mestra PPC_Vale_MultiEmpresa na aba <b>Carregar</b>. O site lê todas as planilhas visíveis e monta resumos diário, semanal, mensal e anual.</p><button class="btn" data-go="carregar">Ir para Carregar</button></section>`;
   const pageHead = (t, sub, right) => `<div class="phead"><div><h2>${t}</h2>${sub ? `<p>${sub}</p>` : ''}</div>${right || ''}</div>`;
 
   /* ---------- Carregar ---------- */
   function tabCarregar() {
-    const dz = `<label class="drop" id="drop" for="fin"><div class="drop-i" aria-hidden="true">⇪</div><b>Arraste os Excel aqui</b><span>Sprint Planning (ÁPIA, SPCI, Rede), PROG-SEM (Milplan) e a planilha-mestra PPC_Vale_MultiEmpresa — pode enviar tudo junto</span><input id="fin" type="file" accept=".xlsx,.xlsm,.xlsb,.xls" multiple hidden></label>`;
+    const dz = `<label class="drop" id="drop" for="fin"><div class="drop-i" aria-hidden="true">⇪</div><b>Arraste Excel ou PDF aqui</b><span>Sprint Planning (ÁPIA, SPCI, Rede), PROG-SEM (Milplan) — em <b>.xlsx ou .pdf</b> — e a planilha-mestra PPC_Vale_MultiEmpresa. Pode enviar tudo junto</span><input id="fin" type="file" accept=".xlsx,.xlsm,.xlsb,.xls,.pdf,application/pdf" multiple hidden></label>`;
     const rep = S.files.map((f) => {
       const skip = f.sheets.filter((s) => s.status === 'oculta' || s.status === 'ignorada').length;
       const sh = f.sheets.map((s) => {
@@ -1198,14 +1471,14 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
         const val = o ? Object.keys(PACOTES).find((k) => PACOTES[k] === o) : 'auto';
         const opts = [['auto', 'Automático'], ['apia', 'ÁPIA'], ['spci', 'LUK · SPCI'], ['rede', 'LUK · Rede'], ['ar', 'LUK · Ar comprimido'], ['milplan', 'MILPLAN'], ['ignorar', 'Ignorar aba']].map(([k, l]) => `<option value="${k}" ${k === val ? 'selected' : ''}>${l}</option>`).join('');
         const who = det && !det.ignorar ? `${logo(det.empresa, 18)}<b>${esc(det.pacote)}</b>` : '<b class="bad-t">Empresa não identificada</b>';
-        return `<li class="sh"><div class="sh-a"><span class="sh-n">${esc(s.name.trim())}</span><span class="muted">${b.acts.length} atividades · ${E.fmtBR(b.dates[0])}–${E.fmtBR(b.dates[b.dates.length - 1])}</span></div><div class="sh-b">${who}<select data-ov="${b.id}" aria-label="Empresa da aba ${esc(s.name)}">${opts}</select></div></li>`;
-      }).join('') + (skip ? `<li class="sh mute"><span>${skip} aba(s) oculta(s) ou fora do layout de programação — ignoradas</span></li>` : '');
-      return `<article class="file"><header><div><b>${esc(f.name)}</b><span class="muted">${(f.size / 1048576).toFixed(1)} MB · salvo em ${new Date(f.mtime).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</span></div><button class="lnk" data-rm="${f.id}">remover</button></header>${f.erro ? `<p class="bad-t pad">Erro ao ler: ${esc(f.erro)}</p>` : ''}<ul>${sh}</ul></article>`;
+        return `<li class="sh"><div class="sh-a"><span class="sh-n">${esc(s.name.trim())}</span><span class="muted">${b.acts.length} atividades · ${E.fmtBR(b.dates[0])}–${E.fmtBR(b.dates[b.dates.length - 1])}${b.fonte === 'pdf' ? ` · ${b.acts.filter((a) => Object.keys(a.P).length).length} com previsto · ${b.acts.filter((a) => Object.keys(a.R).length).length} com realizado` : ''}</span></div><div class="sh-b">${who}<select data-ov="${b.id}" aria-label="Empresa da aba ${esc(s.name)}">${opts}</select></div></li>`;
+      }).join('') + (skip ? `<li class="sh mute"><span>${skip} aba(s)/página(s) oculta(s) ou fora do layout de programação — ignoradas</span></li>` : '');
+      return `<article class="file"><header><div><b>${esc(f.name)}</b>${f.tipo === 'pdf' ? ' <span class="chip chip-info">PDF</span>' : ''}<span class="muted">${(f.size / 1048576).toFixed(1)} MB · salvo em ${new Date(f.mtime).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</span></div><button class="lnk" data-rm="${f.id}">remover</button></header>${f.erro ? `<p class="bad-t pad">Erro ao ler: ${esc(f.erro)}</p>` : ''}<ul>${sh}</ul></article>`;
     }).join('');
     const R = S.rules;
     const rl = (k, t, d) => `<label class="sw-row"><input type="checkbox" data-rule="${k}" ${R[k] ? 'checked' : ''}><span class="tg" aria-hidden="true"></span><span><b>${t}</b><small>${d}</small></span></label>`;
     const apRows = empresas.map((e) => `<label class="apr">${logo(e, 18)}<span>${esc(e)}</span><input type="date" data-ap="${esc(e)}" value="${S.apEd[e] || apDef[e] || ''}" aria-label="Apurado até — ${esc(e)}">${apDef[e] ? '' : '<em class="muted">sem realizado</em>'}</label>`).join('');
-    return `<div class="grid2"><section><h3 class="h">Programações e planilha-mestra</h3>${dz}${S.busy ? `<p class="busy">${esc(S.busy)}…</p>` : ''}<div class="files">${rep || '<p class="muted">Depois de carregar, o relatório de leitura de cada aba aparece aqui. A planilha-mestra traz o histórico (fiscal, encarregado, liderança, causas); as programações mais recentes prevalecem nas semanas que cobrem.</p>'}</div></section>
+    return `<div class="grid2"><section><h3 class="h">Programações e planilha-mestra</h3>${dz}<p class="pdfnote"><span aria-hidden="true">ⓘ</span><span><b>PDF aceito:</b> o site lê o texto do PDF pela posição na tabela (precisa ser o PDF exportado do modelo, com texto selecionável — não foto/escaneado). Confira a contagem de atividades abaixo; se algo vier errado, envie o .xlsx.</span></p>${S.busy ? `<p class="busy">${esc(S.busy)}…</p>` : ''}<div class="files">${rep || '<p class="muted">Depois de carregar, o relatório de leitura de cada aba aparece aqui. A planilha-mestra traz o histórico (fiscal, encarregado, liderança, causas); as programações mais recentes prevalecem nas semanas que cobrem.</p>'}</div></section>
       <section><h3 class="h">Regras do PPC</h3><div class="card rules">
       ${rl('exigirCampos', 'Exigir campos preenchidos', 'Descrição, local, serviço e responsável (quando a planilha tem a coluna).')}
       ${rl('statusNaoIniciado', 'A INICIAR / NÃO INICIADO sai do PPC', 'Se não houver realizado na semana.')}

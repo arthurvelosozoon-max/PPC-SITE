@@ -284,6 +284,9 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .paper-h .lg-vale img { height: 34px; }
 @media (max-width: 640px) { .brand-mark { height: 40px; padding: 6px 10px; } #brand-logo + div { padding-left: 12px; } .brand h1 { font-size: 16px; } }
 
+/* v8 · senha */
+.pjm .chip { width: fit-content; margin: 2px 6px 2px 0; } .pjask { border-left: 4px solid var(--accent); } .pjask .actions { margin-top: 8px; }
+
 </style>
 <header class="top"><div class="top-in">
   <div class="brand"><span id="brand-logo"></span><div><h1>PPC · Contratadas CPF</h1><p>Projeto CPF · SLB III — Planejamento e Controle</p></div></div>
@@ -1857,7 +1860,60 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
   /* ---------- render ---------- */
   /* ---------- projetos: tela inicial + áreas de trabalho ---------- */
-  S.proj = null; S.projetos = store.get('projetos', []); S.pj = { form: null, del: null, area: '' }; S.geralSnap = store.get('geralSnap', null);
+  S.proj = null; S.projetos = store.get('projetos', []); S.pj = { form: null, del: null, area: '', ask: null }; S.geralSnap = store.get('geralSnap', null);
+  /* ---------- senha de acesso por projeto (barreira no navegador) ---------- */
+  const sha256 = (s) => {
+    const rr = (n, x) => (x >>> n) | (x << (32 - n));
+    const K = [], H = [];
+    let pc = 0;
+    for (let c = 2; pc < 64; c++) { let p = true; for (let j = 2; j * j <= c; j++) if (c % j === 0) { p = false; break; }
+      if (p) { if (pc < 8) H[pc] = (Math.pow(c, 1/2) * 4294967296) | 0; K[pc++] = (Math.pow(c, 1/3) * 4294967296) | 0; } }
+    const b = unescape(encodeURIComponent(s)); const bl = b.length * 8;
+    const w = []; for (let i = 0; i < b.length; i++) w[i >> 2] |= b.charCodeAt(i) << (24 - (i % 4) * 8);
+    w[bl >> 5] |= 0x80 << (24 - bl % 32);
+    const nw = (((bl + 64) >> 9) << 4) + 16; for (let i = 0; i < nw; i++) w[i] = w[i] | 0;
+    w[nw - 1] = bl;
+    for (let o = 0; o < nw; o += 16) {
+      const t = w.slice(o, o + 16); const a = H.slice();
+      for (let i = 0; i < 64; i++) {
+        if (i >= 16) { const x = t[i-15], y = t[i-2];
+          t[i] = (t[i-16] + (rr(7,x) ^ rr(18,x) ^ (x >>> 3)) + t[i-7] + (rr(17,y) ^ rr(19,y) ^ (y >>> 10))) | 0; }
+        const e = a[4], f = a[0];
+        const t1 = (a[7] + (rr(6,e) ^ rr(11,e) ^ rr(25,e)) + ((e & a[5]) ^ (~e & a[6])) + K[i] + t[i]) | 0;
+        const t2 = ((rr(2,f) ^ rr(13,f) ^ rr(22,f)) + ((f & a[1]) ^ (f & a[2]) ^ (a[1] & a[2]))) | 0;
+        a.pop(); a.unshift((t1 + t2) | 0); a[4] = (a[4] + t1) | 0;
+      }
+      for (let i = 0; i < 8; i++) H[i] = (H[i] + a[i]) | 0;
+    }
+    return H.map((v) => ('00000000' + (v >>> 0).toString(16)).slice(-8)).join('');
+  };
+  const pwHash = (id, pw) => sha256('ppc-cpf-v1|' + id + '|' + pw);
+  const GERAL_PWH = '309a00a63a14b1ce4b0b6291a7eaead6d03e9f6d8975fbcf26bb95cc46abb791';
+  const pwOf = (id) => (id === 'geral' ? GERAL_PWH : ((S.projetos.find((p) => p.id === id) || {}).pwh || ''));
+  S.unlocked = {};
+  const ASKTXT = { open: 'Abrir', edit: 'Editar', del: 'Excluir' };
+  function askHtml() {
+    const a = S.pj.ask; if (!a) return '';
+    const nm = a.id === 'geral' ? 'Visão geral · Contratadas CPF' : ((S.projetos.find((p) => p.id === a.id) || {}).nome || 'projeto');
+    const set = !pwOf(a.id);
+    return `<section class="card pjform pjask" role="dialog" aria-label="Senha do projeto"><h3 class="h">🔒 ${set ? 'Defina a senha deste projeto' : 'Senha de acesso'}</h3><p class="muted sm"><b>${esc(nm)}</b> — ${set ? 'este projeto ainda não tem senha. Cadastre uma para a equipe; só quem souber a senha abre, edita ou exclui.' : 'digite a senha da equipe para ' + ASKTXT[a.act].toLowerCase() + ' este projeto.'}</p>
+      <div class="pjgrid"><label>${set ? 'Nova senha (mín. 4 caracteres)' : 'Senha'}<input id="pw-in" type="password" autocomplete="off" aria-label="Senha"></label>${set ? '<label>Repita a senha<input id="pw-in2" type="password" autocomplete="off" aria-label="Repita a senha"></label>' : ''}</div>
+      <div class="actions"><button class="btn" data-pwok="1">${set ? 'Salvar senha e continuar' : 'Entrar'}</button><button class="btn ghost" data-pwcancel="1">Cancelar</button></div></section>`;
+  }
+  function pwAsk(id, act) { S.pj.ask = { id, act }; S.pj.form = null; render(); const i = $('#pw-in'); if (i) { i.focus(); i.scrollIntoView({ block: 'center' }); } }
+  function pwDone() {
+    const a = S.pj.ask; if (!a) return; const v = ($('#pw-in') || {}).value || '';
+    if (!pwOf(a.id)) {
+      const v2 = ($('#pw-in2') || {}).value || '';
+      if (v.length < 4) return toast('A senha precisa ter pelo menos 4 caracteres');
+      if (v !== v2) return toast('As senhas não conferem');
+      const p = S.projetos.find((x) => x.id === a.id); if (!p) return; p.pwh = pwHash(a.id, v); store.set('projetos', S.projetos); toast('Senha cadastrada');
+    } else if (pwHash(a.id, v) !== pwOf(a.id)) { const i = $('#pw-in'); if (i) { i.value = ''; i.focus(); } return toast('Senha incorreta'); }
+    S.unlocked[a.id] = true; S.pj.ask = null;
+    if (a.act === 'open') return openProj(a.id);
+    if (a.act === 'edit') { S.pj.form = Object.assign({}, S.projetos.find((p) => p.id === a.id)); render(); window.scrollTo(0, 0); return; }
+    if (a.act === 'del') { S.pj.del = a.id; return render(); }
+  }
   const projRec = () => (S.proj && S.proj !== 'geral' ? S.projetos.find((p) => p.id === S.proj) || null : null);
   const projInfo = () => (S.proj === 'geral' ? { nome: 'Visão geral · Contratadas CPF', area: 'Todas as contratadas', resp: '' } : projRec());
   const wsKey = (k) => (S.proj && S.proj !== 'geral' ? S.proj + '.' : '') + k;
@@ -1888,7 +1944,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     if (saved.length) { saved.sort((p, q) => p.mtime - q.mtime); await readFiles(saved.map((r) => ({ name: r.name, size: r.size, lastModified: r.mtime, arrayBuffer: async () => r.buf })), { restore: true }); }
     go(S.merged.acts.length ? 'resumo' : 'carregar');
   }
-  function goHub() { saveSnap(); S.proj = null; try { history.replaceState(null, '', '#projetos'); } catch (e) { /* */ } render(); window.scrollTo(0, 0); }
+  function goHub() { saveSnap(); S.proj = null; S.unlocked = {}; S.pj.ask = null; try { history.replaceState(null, '', '#projetos'); } catch (e) { /* */ } render(); window.scrollTo(0, 0); }
   function pjForm() {
     const f = S.pj.form; if (!f) return '';
     const areas = [...new Set(S.projetos.map((p) => p.area))];
@@ -1896,6 +1952,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
       <div class="pjgrid"><label>Nome do projeto<input id="pj-nome" value="${esc(f.nome || '')}" placeholder="Ex.: Sistema de combate a incêndio — SLB III"></label>
       <label>Área<input id="pj-area" list="pj-areas" value="${esc(f.area || '')}" placeholder="Ex.: Elétrica, Civil, SPCI…"><datalist id="pj-areas">${areas.map((x) => `<option value="${esc(x)}">`).join('')}</datalist></label>
       <label>Responsável<input id="pj-resp" value="${esc(f.resp || '')}" placeholder="Nome do responsável"></label>
+      <label>${f.id ? 'Nova senha da equipe (vazio = manter)' : 'Senha da equipe (mín. 4 caracteres)'}<input id="pj-pw" type="password" autocomplete="new-password" placeholder="Só esta equipe deve saber"></label>
+      <label>Repita a senha<input id="pj-pw2" type="password" autocomplete="new-password"></label>
       <label class="pjw">Descrição / escopo (opcional)<input id="pj-desc" value="${esc(f.desc || '')}" placeholder="Resumo do que o projeto entrega"></label></div>
       <div class="actions"><button class="btn" data-pjsave="1">Salvar projeto</button><button class="btn ghost" data-pjcancel="1">Cancelar</button></div></section>`;
   }
@@ -1903,7 +1961,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     const sn = p.snap; const open = `data-pjgo="${esc(p.id)}"`;
     const info = sn && sn.n ? `Semana ${wk(sn.ws)} · <b>${sn.c} de ${sn.n}</b> concluídas · ${sn.files} arquivo${sn.files === 1 ? '' : 's'}` : (sn ? `${sn.files} arquivo(s) carregado(s)` : 'Nenhuma programação carregada ainda');
     const del = S.pj.del === p.id ? `<button class="btn danger sm-b" data-pjdel="${esc(p.id)}">Confirmar exclusão</button><button class="lnk" data-pjcancel="1">cancelar</button>` : `<button class="lnk" data-pjedit="${esc(p.id)}">Editar</button><button class="lnk" data-pjdel="${esc(p.id)}">Excluir</button>`;
-    return `<article class="card pjcard"><div class="pjtop"><div class="pjg">${gauge(sn && sn.n ? sn.ppc : null, 72)}</div><div class="pjm"><span class="chip chip-info">${esc(p.area)}</span><h3>${esc(p.nome)}</h3><span class="muted">Responsável: <b>${esc(p.resp)}</b></span>${p.desc ? `<span class="muted sm">${esc(p.desc)}</span>` : ''}</div></div><p class="pjinfo">${info}</p><div class="pjfoot"><button class="btn" ${open}>Abrir projeto →</button><span class="pjact">${del}</span></div></article>`;
+    return `<article class="card pjcard"><div class="pjtop"><div class="pjg">${gauge(sn && sn.n ? sn.ppc : null, 72)}</div><div class="pjm"><span class="chip chip-info">${esc(p.area)}</span><span class="chip chip-mute">${p.pwh ? '🔒 com senha' : '🔓 sem senha'}</span><h3>${esc(p.nome)}</h3><span class="muted">Responsável: <b>${esc(p.resp)}</b></span>${p.desc ? `<span class="muted sm">${esc(p.desc)}</span>` : ''}</div></div><p class="pjinfo">${info}</p><div class="pjfoot"><button class="btn" ${open}>Abrir projeto →</button><span class="pjact">${del}</span></div></article>`;
   }
   function tabHub() {
     const ps = S.projetos; const withS = ps.filter((p) => p.snap && p.snap.n);
@@ -1913,11 +1971,11 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     const areas = [...new Set(ps.map((p) => p.area))].sort((x, y) => x.localeCompare(y, 'pt-BR'));
     if (S.pj.area && !areas.includes(S.pj.area)) S.pj.area = '';
     const pills = areas.length > 1 ? `<div class="pills"><button class="pill ${S.pj.area ? '' : 'on'}" data-pjarea="*">Todas as áreas</button>${areas.map((x) => `<button class="pill ${S.pj.area === x ? 'on' : ''}" data-pjarea="${esc(x)}">${esc(x)}</button>`).join('')}</div>` : '';
-    const geral = `<article class="card pjcard pjgeral"><div class="pjtop"><div class="pjg">${gauge(gs && gs.n ? gs.ppc : null, 72)}</div><div class="pjm"><span class="chip chip-info">Todas as contratadas</span><h3>Visão geral · Contratadas CPF</h3><span class="muted pjl">${['ÁPIA', 'LUK', 'MILPLAN'].map((e) => logo(e, 18)).join('')}</span><span class="muted sm">Sprint plannings semanais de ÁPIA, LUK e MILPLAN, com Pareto e relatórios.</span></div></div><p class="pjinfo">${gs && gs.n ? `Semana ${wk(gs.ws)} · <b>${gs.c} de ${gs.n}</b> concluídas · ${gs.files} arquivo${gs.files === 1 ? '' : 's'}` : 'Nenhuma programação carregada ainda'}</p><div class="pjfoot"><button class="btn" data-pjgo="geral">Abrir visão geral →</button></div></article>`;
+    const geral = `<article class="card pjcard pjgeral"><div class="pjtop"><div class="pjg">${gauge(gs && gs.n ? gs.ppc : null, 72)}</div><div class="pjm"><span class="chip chip-info">Todas as contratadas</span><span class="chip chip-mute">🔒 com senha</span><h3>Visão geral · Contratadas CPF</h3><span class="muted pjl">${['ÁPIA', 'LUK', 'MILPLAN'].map((e) => logo(e, 18)).join('')}</span><span class="muted sm">Sprint plannings semanais de ÁPIA, LUK e MILPLAN, com Pareto e relatórios.</span></div></div><p class="pjinfo">${gs && gs.n ? `Semana ${wk(gs.ws)} · <b>${gs.c} de ${gs.n}</b> concluídas · ${gs.files} arquivo${gs.files === 1 ? '' : 's'}` : 'Nenhuma programação carregada ainda'}</p><div class="pjfoot"><button class="btn" data-pjgo="geral">Abrir visão geral →</button></div></article>`;
     const list = ps.filter((p) => !S.pj.area || p.area === S.pj.area);
     const grupos = (S.pj.area ? [S.pj.area] : areas).map((ar) => { const it = list.filter((p) => p.area === ar); return it.length ? `<section class="pjarea"><div class="sec-h"><h3>${esc(ar)}</h3><span class="muted">${it.length} projeto${it.length === 1 ? '' : 's'}</span></div><div class="pjcards">${it.map(pjCard).join('')}</div></section>` : ''; }).join('');
     const vazio = ps.length ? '' : `<section class="card empty"><h3>Cadastre seu primeiro projeto</h3><p>Informe nome, área e responsável. Ao abrir o projeto você entra na página principal dele, carrega as programações em Excel e vê PPC, atividades, Pareto e relatórios só daquele projeto.</p><div class="actions"><button class="btn" data-pjnew="1">+ Novo projeto</button></div></section>`;
-    return `${pageHead('Projetos', 'Escolha o projeto para abrir a página principal dele, ou cadastre um novo', `<button class="btn" data-pjnew="1">+ Novo projeto</button>`)}${pjForm()}${kpis}${pills}<section class="pjarea"><div class="sec-h"><h3>Visão geral</h3><span class="muted">Todas as contratadas juntas</span></div><div class="pjcards">${geral}</div></section>${grupos}${vazio}`;
+    return `${pageHead('Projetos', 'Escolha o projeto para abrir a página principal dele, ou cadastre um novo', `<button class="btn" data-pjnew="1">+ Novo projeto</button>`)}${pjForm()}${askHtml()}${kpis}${pills}<section class="pjarea"><div class="sec-h"><h3>Visão geral</h3><span class="muted">Todas as contratadas juntas</span></div><div class="pjcards">${geral}</div></section>${grupos}${vazio}`;
   }
   function renderProjbar() {
     const el = $('#projbar'); const p = projInfo(); if (!el) return;
@@ -1929,7 +1987,10 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     const nome = g('pj-nome'), area = g('pj-area'), resp = g('pj-resp');
     if (!nome || !area || !resp) { toast('Preencha nome, área e responsável'); return; }
     const f = S.pj.form; const old = f.id ? S.projetos.find((p) => p.id === f.id) : null;
+    const pw = ($('#pj-pw') || {}).value || '', pw2 = ($('#pj-pw2') || {}).value || '';
+    if (!old || pw || pw2) { if (pw.length < 4) { toast('Defina uma senha de pelo menos 4 caracteres'); return; } if (pw !== pw2) { toast('As senhas não conferem'); return; } }
     const rec = Object.assign({}, old || {}, { id: f.id || 'p' + Date.now(), nome, area, resp, desc: g('pj-desc') });
+    if (pw) rec.pwh = pwHash(rec.id, pw);
     const i = S.projetos.findIndex((p) => p.id === rec.id); if (i >= 0) S.projetos[i] = rec; else S.projetos.push(rec);
     store.set('projetos', S.projetos); S.pj.form = null; toast('Projeto salvo'); render();
   }
@@ -1980,7 +2041,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
   /* ---------- eventos ---------- */
   document.addEventListener('click', (ev) => {
-    const t = ev.target.closest('[data-tab],[data-go],[data-emp],[data-wk],[data-rm],[data-gran],[data-dia],[data-fclear],[data-fcsv],[data-eqv],[data-eqp],[data-pap],[data-relp],[data-tg],[data-logo-reset],[data-jump],[data-pjgo],[data-pjhub],[data-pjarea],[data-pjnew],[data-pjedit],[data-pjdel],[data-pjsave],[data-pjcancel],#totop,#pdf,#xlsx,#wpp,#clr,#theme');
+    const t = ev.target.closest('[data-tab],[data-go],[data-emp],[data-wk],[data-rm],[data-gran],[data-dia],[data-fclear],[data-fcsv],[data-eqv],[data-eqp],[data-pap],[data-relp],[data-tg],[data-logo-reset],[data-jump],[data-pjgo],[data-pwok],[data-pwcancel],[data-pjhub],[data-pjarea],[data-pjnew],[data-pjedit],[data-pjdel],[data-pjsave],[data-pjcancel],#totop,#pdf,#xlsx,#wpp,#clr,#theme');
     if (!t) return;
     const d = t.dataset;
     if (d.tab) return go(d.tab);
@@ -2004,13 +2065,15 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     if (d.relp) { S.rel.per = d.relp; return render(); }
     if (d.tg) { S.closed[d.tg] = !S.closed[d.tg]; const c = t; c.classList.toggle('closed', !!S.closed[d.tg]); return applyTree(); }
     if (d.jump) { const el = document.getElementById(d.jump); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
-    if (d.pjgo) return openProj(d.pjgo);
+    if (d.pjgo) return pwAsk(d.pjgo, 'open');
+    if (d.pwok) return pwDone();
+    if (d.pwcancel) { S.pj.ask = null; return render(); }
     if (d.pjhub) return goHub();
     if (d.pjarea) { S.pj.area = d.pjarea === '*' ? '' : d.pjarea; return render(); }
     if (t.id === 'totop') { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
     if (d.pjnew) { S.pj.form = {}; render(); const i = $('#pj-nome'); if (i) i.focus(); return; }
-    if (d.pjedit) { S.pj.form = Object.assign({}, S.projetos.find((p) => p.id === d.pjedit)); render(); window.scrollTo(0, 0); return; }
-    if (d.pjdel) { if (S.pj.del === d.pjdel) { S.projetos = S.projetos.filter((p) => p.id !== d.pjdel); store.set('projetos', S.projetos); idb.delPrefix(d.pjdel + '|'); S.pj.del = null; toast('Projeto excluído'); } else S.pj.del = d.pjdel; return render(); }
+    if (d.pjedit) return pwAsk(d.pjedit, 'edit');
+    if (d.pjdel) { if (S.pj.del === d.pjdel) { S.projetos = S.projetos.filter((p) => p.id !== d.pjdel); store.set('projetos', S.projetos); idb.delPrefix(d.pjdel + '|'); S.pj.del = null; toast('Projeto excluído'); return render(); } return pwAsk(d.pjdel, 'del'); }
     if (d.pjsave) return pjSave();
     if (d.pjcancel) { S.pj.form = null; S.pj.del = null; return render(); }
     if (d.logoReset) { delete S.logos[d.logoReset]; store.set('logos', S.logos); return render(); }
@@ -2038,6 +2101,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     if (d.sup) { if (t.value.trim()) S.supMap[d.sup] = t.value.trim(); else delete S.supMap[d.sup]; wset('supMap', S.supMap); recompute(); return; }
     if (d.logo) { const f = t.files[0]; if (!f) return; const rd = new FileReader(); rd.onload = () => { S.logos[d.logo] = rd.result; store.set('logos', S.logos); render(); }; rd.readAsDataURL(f); }
   });
+  document.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && (ev.target.id === 'pw-in' || ev.target.id === 'pw-in2')) { ev.preventDefault(); pwDone(); } });
   document.addEventListener('input', (ev) => { if (ev.target.id === 'q') { S.f.q = ev.target.value; keepFocus = '#q'; render(); } });
   ['dragenter', 'dragover'].forEach((n) => document.addEventListener(n, (e) => { if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) { e.preventDefault(); $('#view').classList.add('dragging'); } }));
   ['dragleave', 'drop'].forEach((n) => document.addEventListener(n, (e) => { if (n === 'drop') { e.preventDefault(); if (S.proj && e.dataTransfer && e.dataTransfer.files.length) readFiles(e.dataTransfer.files); } $('#view').classList.remove('dragging'); }));

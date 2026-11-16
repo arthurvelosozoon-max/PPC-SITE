@@ -260,6 +260,18 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .pdfnote{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--soft);font-size:12.5px;color:var(--fg-2);margin:10px 0}
 .pdfnote b{color:var(--fg)}
 
+/* v7 · Relatório: pendências por empresa */
+.rel-at { border: 1px solid var(--line); border-radius: 12px; margin: 12px 0 16px; overflow: hidden; background: var(--card); }
+.rel-at .ath { background: var(--soft); }
+.rel-at .gh { margin: 0; padding: 10px 18px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; display: flex; gap: 8px; align-items: center; border-bottom: 1px solid var(--line); }
+.rel-at .gh span { background: var(--card); border-radius: 999px; padding: 1px 9px; font-size: 11.5px; }
+.rel-at .gh-bad { color: var(--bad); } .rel-at .gh-warn { color: var(--warn); }
+.rel-at .jt { min-width: 200px; white-space: normal; } .rel-at .att td small { display: block; color: var(--fg-3); }
+.rel-at .tw { overflow-x: auto; } .rel-at .at-ok { margin: 0; }
+.rel-ins { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 6px; }
+.rel-ins li { padding: 9px 12px 9px 14px; border-radius: 10px; background: var(--soft); border-left: 4px solid var(--line-2); font-size: 13.5px; }
+.rel-ins .ins-bad { border-left-color: var(--bad); } .rel-ins .ins-warn { border-left-color: var(--warn); } .rel-ins .ins-ok { border-left-color: var(--ok); }
+
 </style>
 <header class="top"><div class="top-in">
   <div class="brand"><span id="brand-logo"></span><div><h1>PPC · Contratadas CPF</h1><p>Projeto CPF · SLB III — Planejamento e Controle</p></div></div>
@@ -1749,21 +1761,34 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     if (rd.atencao.length) t += '\n\n*Pontos de atenção*\n' + rd.atencao.slice(0, 5).map((r) => `• ${r.empresa} — ${r.a.desc.slice(0, 60)} (${pct(r.ader)})`).join('\n');
     return t;
   }
+  function relAtencaoHtml(rd) {
+    const data = attData(rd.info.weeks, rd.emp);
+    const linha = (r) => { const j = justOf(r); const cz = causaOf(r), rs = respOf(r); return `<tr><td class="desc"><b>${esc(r.a.desc)}</b><small>${esc([r.a.local, r.a.serv].filter(Boolean).join(' · '))}</small><small>${wk(r.ws)} · ${esc(r.a.fiscal || 'sem fiscal')}${r.a.enc ? ' · ' + esc(r.a.enc) : ''}</small></td><td class="r">${fnum(r.pAp)} <small>${esc(r.a.un)}</small></td><td class="r">${fnum(r.rAp)} <small>${esc(r.a.un)}</small></td><td>${bar(r.ader)}<span class="bn">${pct(r.ader)}</span></td><td>${cz ? `<b>${esc(cz)}</b>` : '<span class="muted">sem causa</span>'}${rs ? `<small>${esc(rs)}</small>` : ''}</td><td class="jt">${j ? esc(j) : '<span class="muted">sem justificativa</span>'}</td></tr>`; };
+    const grupo = (titulo, tone, rows) => !rows.length ? '' : `<h5 class="gh gh-${tone}">${titulo} <span>${rows.length}</span></h5><div class="tw"><table class="att"><thead><tr><th>Atividade</th><th class="r">Previsto</th><th class="r">Realizado</th><th>Aderência</th><th>Causa · Responsável</th><th>Justificativa</th></tr></thead><tbody>${rows.slice(0, 25).map(linha).join('')}</tbody></table></div>${rows.length > 25 ? `<p class="muted sm">+ ${rows.length - 25} atividades — lista completa no Excel (aba Pontos de atenção).</p>` : ''}`;
+    return data.map((z) => {
+      const nx = z.rows.filter((r) => !r.parcial), np = z.rows.filter((r) => r.parcial);
+      const sj = z.rows.filter((r) => !justOf(r)).length; const ppc = z.n ? z.c / z.n : null;
+      const head = `<header class="ath">${logo(z.e, 22)}<div><h3>${esc(z.e)}</h3><span class="muted">${z.c} de ${z.n} concluídas · PPC ${pct(ppc)}</span></div><div class="atc"><span class="chip chip-${nx.length ? 'bad' : 'ok'}">${nx.length} não realizada${nx.length === 1 ? '' : 's'}</span><span class="chip chip-${np.length ? 'warn' : 'ok'}">${np.length} parcia${np.length === 1 ? 'l' : 'is'}</span>${sj ? `<span class="chip chip-mute">${sj} sem justificativa</span>` : ''}</div></header>`;
+      if (!z.rows.length) return `<section class="rel-at">${head}<p class="at-ok">${z.n ? 'Sem pendências: todas as atividades programadas foram concluídas.' : 'Nenhuma atividade programada apurada no período.'}</p></section>`;
+      return `<section class="rel-at">${head}${grupo('Não realizadas', 'bad', nx)}${grupo('Feitas parcialmente', 'warn', np)}</section>`;
+    }).join('');
+  }
   function tabRelatorio() {
     if (!S.ws) return emptyState();
     const rd = reportData(S.rel.per); const v = rd.a.view(rd.emp);
     const btns = `<div class="rep-actions"><button class="btn" id="pdf">Gerar PDF</button><button class="btn" id="xlsx">Gerar Excel</button><button class="btn ghost" id="wpp">Copiar resumo (WhatsApp)</button></div>`;
     const empRows = empresas.filter((e) => rd.emp === 'Todas' || rd.emp === e).map((e) => { const z = rd.a.por[e]; return `<tr><td>${empTag(e, 18)}</td><td class="r">${z.n}</td><td class="r t-ok">${z.c}</td><td class="r t-warn">${z.p}</td><td class="r t-bad">${z.x}</td><td>${bar(z.ppc)}<span class="bn t-${sem(z.ppc)}">${pct(z.ppc)}</span></td><td class="r">${pct(z.ader)}</td></tr>`; }).join('');
-    const at = rd.atencao.slice(0, 8).map((r) => `<tr><td>${logo(r.empresa, 16)}</td><td class="desc"><b>${esc(r.a.desc)}</b><small>${esc([r.a.fiscal, r.a.enc].filter(Boolean).join(' · '))}</small></td><td>${bar(r.ader)}<span class="bn">${pct(r.ader)}</span></td><td>${esc(causaOf(r) || '—')}</td></tr>`).join('');
+    const ins = insightsFor(v, rd.a.por).map((i) => `<li class="ins-${i.t}">${esc(i.x)}</li>`).join('');
     return `${pageHead('Relatório', 'Monte o relatório para enviar ou apresentar: PDF com os principais indicadores e Excel com todas as tabelas.', '')}
       <div class="ctl"><div class="ctl-l">${seg([['semana', 'Semanal'], ['mes', 'Mensal'], ['ano', 'Anual'], ['tudo', 'Acumulado']], S.rel.per, 'data-relp')}${periodSelect(S.rel.per)}</div>${empPills()}</div>
       ${btns}
       <article class="paper"><header class="paper-h"><span class="lg lg-vale" style="--h:30px"><img src="${LOGOS.vale || ''}" alt="Vale"></span><div><span class="eyebrow">Relatório de PPC · Projeto CPF · SLB III</span><h3>${esc(rd.info.titulo)}${rd.emp !== 'Todas' ? ' · ' + esc(rd.emp) : ''}</h3></div></header>
-      <div class="paper-k"><div><b class="t-${sem(v.ppc)}">${pct(v.ppc)}</b><span>PPC ${rd.prev ? deltaTxt(v.ppc, rd.prev.view(rd.emp).ppc, rd.prevInfo.curto) : ''}</span></div><div><b>${pct(v.ader)}</b><span>Aderência</span></div><div><b>${v.n}</b><span>Programadas</span></div><div><b>${v.c}</b><span>Concluídas</span></div><div><b>${v.x}</b><span>Não executadas</span></div></div>
+      <div class="paper-k"><div><b class="t-${sem(v.ppc)}">${pct(v.ppc)}</b><span>PPC ${rd.prev ? deltaTxt(v.ppc, rd.prev.view(rd.emp).ppc, rd.prevInfo.curto) : ''}</span></div><div><b>${pct(v.ader)}</b><span>Aderência</span></div><div><b>${v.n}</b><span>Programadas</span></div><div><b>${v.c}</b><span>Concluídas</span></div><div><b class="t-warn">${v.p}</b><span>Parciais</span></div><div><b class="t-bad">${v.x}</b><span>Não executadas</span></div></div>
+      ${ins ? `<h4>Destaques do período</h4><ul class="rel-ins">${ins}</ul>` : ''}
       <h4>Por empresa</h4><div class="tw"><table>${gHead('Empresa')}<tbody>${empRows}</tbody></table></div>
       <h4>Evolução</h4>${rd.per === 'ano' || rd.per === 'mes' ? lineChart(rd.hist, ['Todas'].concat(empresas)) : lineChart(rd.hist, ['Todas'].concat(empresas))}
       <h4>Principais causas</h4>${paretoSvg(rd.pareto.causa.slice(0, 6), { label: 190 })}
-      <h4>Pontos de atenção</h4>${at ? `<div class="tw"><table><thead><tr><th></th><th>Atividade</th><th>Aderência</th><th>Causa</th></tr></thead><tbody>${at}</tbody></table></div>` : '<p class="muted">Nada pendente.</p>'}
+      <h4>Pontos de atenção por empresa</h4><p class="muted sm">O que não foi realizado e o que ficou parcial, com causa, responsável e justificativa. Edite causas e justificativas na aba Resumo.</p>${relAtencaoHtml(rd)}
       <p class="muted sm">O PDF traz ainda: dia a dia, hierarquia por fiscal/encarregado/liderança, pareto de responsabilidade e critérios. O Excel traz todas as tabelas do período.</p></article>`;
   }
 

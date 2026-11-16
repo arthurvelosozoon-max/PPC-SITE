@@ -1861,6 +1861,9 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   /* ---------- render ---------- */
   /* ---------- projetos: tela inicial + áreas de trabalho ---------- */
   S.proj = null; S.projetos = store.get('projetos', []); S.pj = { form: null, del: null, area: '', ask: null }; S.geralSnap = store.get('geralSnap', null);
+  const GERAL_DEF = { nome: 'Visão geral · Contratadas CPF', area: 'Todas as contratadas', resp: '', desc: 'Sprint plannings semanais de ÁPIA, LUK e MILPLAN, com Pareto e relatórios.', removed: false };
+  S.geralRec = Object.assign({}, GERAL_DEF, store.get('geralRec', {}));
+  const saveGeral = () => store.set('geralRec', S.geralRec);
   /* ---------- senha de acesso por projeto (barreira no navegador) ---------- */
   const sha256 = (s) => {
     const rr = (n, x) => (x >>> n) | (x << (32 - n));
@@ -1889,12 +1892,12 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   };
   const pwHash = (id, pw) => sha256('ppc-cpf-v1|' + id + '|' + pw);
   const GERAL_PWH = '309a00a63a14b1ce4b0b6291a7eaead6d03e9f6d8975fbcf26bb95cc46abb791';
-  const pwOf = (id) => (id === 'geral' ? GERAL_PWH : ((S.projetos.find((p) => p.id === id) || {}).pwh || ''));
+  const pwOf = (id) => (id === 'geral' ? (S.geralRec.pwh || GERAL_PWH) : ((S.projetos.find((p) => p.id === id) || {}).pwh || ''));
   S.unlocked = {};
   const ASKTXT = { open: 'Abrir', edit: 'Editar', del: 'Excluir' };
   function askHtml() {
     const a = S.pj.ask; if (!a) return '';
-    const nm = a.id === 'geral' ? 'Visão geral · Contratadas CPF' : ((S.projetos.find((p) => p.id === a.id) || {}).nome || 'projeto');
+    const nm = a.id === 'geral' ? S.geralRec.nome : ((S.projetos.find((p) => p.id === a.id) || {}).nome || 'projeto');
     const set = !pwOf(a.id);
     return `<section class="card pjform pjask" role="dialog" aria-label="Senha do projeto"><h3 class="h">🔒 ${set ? 'Defina a senha deste projeto' : 'Senha de acesso'}</h3><p class="muted sm"><b>${esc(nm)}</b> — ${set ? 'este projeto ainda não tem senha. Cadastre uma para a equipe; só quem souber a senha abre, edita ou exclui.' : 'digite a senha da equipe para ' + ASKTXT[a.act].toLowerCase() + ' este projeto.'}</p>
       <div class="pjgrid"><label>${set ? 'Nova senha (mín. 4 caracteres)' : 'Senha'}<input id="pw-in" type="password" autocomplete="off" aria-label="Senha"></label>${set ? '<label>Repita a senha<input id="pw-in2" type="password" autocomplete="off" aria-label="Repita a senha"></label>' : ''}</div>
@@ -1911,11 +1914,11 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     } else if (pwHash(a.id, v) !== pwOf(a.id)) { const i = $('#pw-in'); if (i) { i.value = ''; i.focus(); } return toast('Senha incorreta'); }
     S.unlocked[a.id] = true; S.pj.ask = null;
     if (a.act === 'open') return openProj(a.id);
-    if (a.act === 'edit') { S.pj.form = Object.assign({}, S.projetos.find((p) => p.id === a.id)); render(); window.scrollTo(0, 0); return; }
+    if (a.act === 'edit') { S.pj.form = a.id === 'geral' ? Object.assign({}, S.geralRec, { id: 'geral' }) : Object.assign({}, S.projetos.find((p) => p.id === a.id)); render(); window.scrollTo(0, 0); return; }
     if (a.act === 'del') { S.pj.del = a.id; return render(); }
   }
   const projRec = () => (S.proj && S.proj !== 'geral' ? S.projetos.find((p) => p.id === S.proj) || null : null);
-  const projInfo = () => (S.proj === 'geral' ? { nome: 'Visão geral · Contratadas CPF', area: 'Todas as contratadas', resp: '' } : projRec());
+  const projInfo = () => (S.proj === 'geral' ? S.geralRec : projRec());
   const wsKey = (k) => (S.proj && S.proj !== 'geral' ? S.proj + '.' : '') + k;
   const wget = (k, d) => store.get(wsKey(k), d); const wset = (k, v) => store.set(wsKey(k), v);
   const idb = (() => {
@@ -1971,11 +1974,13 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     const areas = [...new Set(ps.map((p) => p.area))].sort((x, y) => x.localeCompare(y, 'pt-BR'));
     if (S.pj.area && !areas.includes(S.pj.area)) S.pj.area = '';
     const pills = areas.length > 1 ? `<div class="pills"><button class="pill ${S.pj.area ? '' : 'on'}" data-pjarea="*">Todas as áreas</button>${areas.map((x) => `<button class="pill ${S.pj.area === x ? 'on' : ''}" data-pjarea="${esc(x)}">${esc(x)}</button>`).join('')}</div>` : '';
-    const geral = `<article class="card pjcard pjgeral"><div class="pjtop"><div class="pjg">${gauge(gs && gs.n ? gs.ppc : null, 72)}</div><div class="pjm"><span class="chip chip-info">Todas as contratadas</span><span class="chip chip-mute">🔒 com senha</span><h3>Visão geral · Contratadas CPF</h3><span class="muted pjl">${['ÁPIA', 'LUK', 'MILPLAN'].map((e) => logo(e, 18)).join('')}</span><span class="muted sm">Sprint plannings semanais de ÁPIA, LUK e MILPLAN, com Pareto e relatórios.</span></div></div><p class="pjinfo">${gs && gs.n ? `Semana ${wk(gs.ws)} · <b>${gs.c} de ${gs.n}</b> concluídas · ${gs.files} arquivo${gs.files === 1 ? '' : 's'}` : 'Nenhuma programação carregada ainda'}</p><div class="pjfoot"><button class="btn" data-pjgo="geral">Abrir visão geral →</button></div></article>`;
+    const gr = S.geralRec;
+    const gdel = S.pj.del === 'geral' ? `<button class="btn danger sm-b" data-pjdel="geral">Confirmar exclusão</button><button class="lnk" data-pjcancel="1">cancelar</button>` : `<button class="lnk" data-pjedit="geral">Editar</button><button class="lnk" data-pjdel="geral">Excluir</button>`;
+    const geral = `<article class="card pjcard pjgeral"><div class="pjtop"><div class="pjg">${gauge(gs && gs.n ? gs.ppc : null, 72)}</div><div class="pjm"><span class="chip chip-info">${esc(gr.area)}</span><span class="chip chip-mute">🔒 com senha</span><h3>${esc(gr.nome)}</h3><span class="muted pjl">${['ÁPIA', 'LUK', 'MILPLAN'].map((e) => logo(e, 18)).join('')}</span>${gr.resp ? `<span class="muted">Responsável: <b>${esc(gr.resp)}</b></span>` : ''}${gr.desc ? `<span class="muted sm">${esc(gr.desc)}</span>` : ''}</div></div><p class="pjinfo">${gs && gs.n ? `Semana ${wk(gs.ws)} · <b>${gs.c} de ${gs.n}</b> concluídas · ${gs.files} arquivo${gs.files === 1 ? '' : 's'}` : 'Nenhuma programação carregada ainda'}</p><div class="pjfoot"><button class="btn" data-pjgo="geral">Abrir visão geral →</button><span class="pjact">${gdel}</span></div></article>`;
     const list = ps.filter((p) => !S.pj.area || p.area === S.pj.area);
     const grupos = (S.pj.area ? [S.pj.area] : areas).map((ar) => { const it = list.filter((p) => p.area === ar); return it.length ? `<section class="pjarea"><div class="sec-h"><h3>${esc(ar)}</h3><span class="muted">${it.length} projeto${it.length === 1 ? '' : 's'}</span></div><div class="pjcards">${it.map(pjCard).join('')}</div></section>` : ''; }).join('');
     const vazio = ps.length ? '' : `<section class="card empty"><h3>Cadastre seu primeiro projeto</h3><p>Informe nome, área e responsável. Ao abrir o projeto você entra na página principal dele, carrega as programações em Excel e vê PPC, atividades, Pareto e relatórios só daquele projeto.</p><div class="actions"><button class="btn" data-pjnew="1">+ Novo projeto</button></div></section>`;
-    return `${pageHead('Projetos', 'Escolha o projeto para abrir a página principal dele, ou cadastre um novo', `<button class="btn" data-pjnew="1">+ Novo projeto</button>`)}${pjForm()}${askHtml()}${kpis}${pills}<section class="pjarea"><div class="sec-h"><h3>Visão geral</h3><span class="muted">Todas as contratadas juntas</span></div><div class="pjcards">${geral}</div></section>${grupos}${vazio}`;
+    return `${pageHead('Projetos', 'Escolha o projeto para abrir a página principal dele, ou cadastre um novo', `<button class="btn" data-pjnew="1">+ Novo projeto</button>`)}${pjForm()}${askHtml()}${kpis}${pills}${gr.removed ? `<section class="card empty"><h3>Visão geral removida</h3><p>A visão geral das contratadas foi excluída deste navegador. Você pode restaurá-la (com a senha padrão).</p><div class="actions"><button class="btn ghost" data-pjrestore="1">Restaurar Visão geral</button></div></section>` : `<section class="pjarea"><div class="sec-h"><h3>Visão geral</h3><span class="muted">Todas as contratadas juntas</span></div><div class="pjcards">${geral}</div></section>`}${grupos}${vazio}`;
   }
   function renderProjbar() {
     const el = $('#projbar'); const p = projInfo(); if (!el) return;
@@ -1986,11 +1991,12 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     const g = (id) => ($('#' + id) ? $('#' + id).value.trim() : '');
     const nome = g('pj-nome'), area = g('pj-area'), resp = g('pj-resp');
     if (!nome || !area || !resp) { toast('Preencha nome, área e responsável'); return; }
-    const f = S.pj.form; const old = f.id ? S.projetos.find((p) => p.id === f.id) : null;
+    const f = S.pj.form; const isG = f.id === 'geral'; const old = isG ? S.geralRec : (f.id ? S.projetos.find((p) => p.id === f.id) : null);
     const pw = ($('#pj-pw') || {}).value || '', pw2 = ($('#pj-pw2') || {}).value || '';
     if (!old || pw || pw2) { if (pw.length < 4) { toast('Defina uma senha de pelo menos 4 caracteres'); return; } if (pw !== pw2) { toast('As senhas não conferem'); return; } }
     const rec = Object.assign({}, old || {}, { id: f.id || 'p' + Date.now(), nome, area, resp, desc: g('pj-desc') });
     if (pw) rec.pwh = pwHash(rec.id, pw);
+    if (isG) { delete rec.id; S.geralRec = rec; saveGeral(); S.pj.form = null; toast('Visão geral salva'); return render(); }
     const i = S.projetos.findIndex((p) => p.id === rec.id); if (i >= 0) S.projetos[i] = rec; else S.projetos.push(rec);
     store.set('projetos', S.projetos); S.pj.form = null; toast('Projeto salvo'); render();
   }
@@ -2041,7 +2047,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
   /* ---------- eventos ---------- */
   document.addEventListener('click', (ev) => {
-    const t = ev.target.closest('[data-tab],[data-go],[data-emp],[data-wk],[data-rm],[data-gran],[data-dia],[data-fclear],[data-fcsv],[data-eqv],[data-eqp],[data-pap],[data-relp],[data-tg],[data-logo-reset],[data-jump],[data-pjgo],[data-pwok],[data-pwcancel],[data-pjhub],[data-pjarea],[data-pjnew],[data-pjedit],[data-pjdel],[data-pjsave],[data-pjcancel],#totop,#pdf,#xlsx,#wpp,#clr,#theme');
+    const t = ev.target.closest('[data-tab],[data-go],[data-emp],[data-wk],[data-rm],[data-gran],[data-dia],[data-fclear],[data-fcsv],[data-eqv],[data-eqp],[data-pap],[data-relp],[data-tg],[data-logo-reset],[data-jump],[data-pjgo],[data-pjrestore],[data-pwok],[data-pwcancel],[data-pjhub],[data-pjarea],[data-pjnew],[data-pjedit],[data-pjdel],[data-pjsave],[data-pjcancel],#totop,#pdf,#xlsx,#wpp,#clr,#theme');
     if (!t) return;
     const d = t.dataset;
     if (d.tab) return go(d.tab);
@@ -2073,7 +2079,9 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
     if (t.id === 'totop') { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
     if (d.pjnew) { S.pj.form = {}; render(); const i = $('#pj-nome'); if (i) i.focus(); return; }
     if (d.pjedit) return pwAsk(d.pjedit, 'edit');
-    if (d.pjdel) { if (S.pj.del === d.pjdel) { S.projetos = S.projetos.filter((p) => p.id !== d.pjdel); store.set('projetos', S.projetos); idb.delPrefix(d.pjdel + '|'); S.pj.del = null; toast('Projeto excluído'); return render(); } return pwAsk(d.pjdel, 'del'); }
+    if (d.pjrestore) { S.geralRec = Object.assign({}, GERAL_DEF); saveGeral(); toast('Visão geral restaurada'); return render(); }
+    if (d.pjdel) { if (S.pj.del === d.pjdel && d.pjdel === 'geral') { idb.delPrefix('geral|'); ['cons', 'causa', 'resp', 'supMap', 'just', 'geralSnap'].forEach((k) => store.set(k, k === 'geralSnap' ? null : {})); S.geralSnap = null; S.geralRec.removed = true; saveGeral(); S.pj.del = null; toast('Visão geral excluída'); return render(); }
+      if (S.pj.del === d.pjdel) { S.projetos = S.projetos.filter((p) => p.id !== d.pjdel); store.set('projetos', S.projetos); idb.delPrefix(d.pjdel + '|'); S.pj.del = null; toast('Projeto excluído'); return render(); } return pwAsk(d.pjdel, 'del'); }
     if (d.pjsave) return pjSave();
     if (d.pjcancel) { S.pj.form = null; S.pj.del = null; return render(); }
     if (d.logoReset) { delete S.logos[d.logoReset]; store.set('logos', S.logos); return render(); }
